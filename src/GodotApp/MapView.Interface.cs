@@ -294,8 +294,14 @@ public partial class MapView
     {
         await RunOperation("Abrindo mapa…", async () =>
         {
-            WorldData world = await Task.Run(() => WorldFile.Load(path));
-            InstallWorld(world);
+            var (world, buffers) = await Task.Run(() =>
+            {
+                WorldData result = WorldFile.Load(path);
+                GlobalDataTextures.Buffers? data = result.Manifest.Generation.Stage == GenerationStage.Blank
+                    ? null : GlobalDataTextures.BuildBuffers(result);
+                return (result, data);
+            });
+            InstallWorld(world, buffers);
             _currentPath = path;
             _dirty = false;
             RememberPath(path);

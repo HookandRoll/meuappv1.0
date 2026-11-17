@@ -6,7 +6,7 @@ namespace Mapmaker.Core;
 
 public static partial class WorldGenerator
 {
-    private sealed class ContinentalSculpture
+    private sealed partial class ContinentalSculpture
     {
         private readonly int _width;
         private readonly int _height;
@@ -17,6 +17,8 @@ public static partial class WorldGenerator
         private readonly bool _finishShoreline;
         private readonly bool _removeIslandRibbons;
         private readonly bool _roundShallowInlets;
+        private readonly bool _refineCoastClusters;
+        private readonly bool _separateContinents;
         private readonly GenerationSettings _settings;
         private readonly float _scale;
         private readonly float _coastDetail;
@@ -31,12 +33,14 @@ public static partial class WorldGenerator
             _width = manifest.Width;
             _height = manifest.Height;
             _wrap = manifest.HorizontalWrap;
-            _useContinuousField = manifest.GeneratorVersion == 7;
-            _refineShore = manifest.GeneratorVersion >= 8;
+            _useContinuousField = manifest.GeneratorVersion is 7 or >= 13;
+            _refineShore = manifest.GeneratorVersion >= 8 && !_useContinuousField;
             _preserveShoreDetail = manifest.GeneratorVersion >= 9;
             _finishShoreline = manifest.GeneratorVersion >= 10;
             _removeIslandRibbons = manifest.GeneratorVersion >= 11;
-            _roundShallowInlets = manifest.GeneratorVersion >= 12;
+            _roundShallowInlets = manifest.GeneratorVersion >= 12 && !_useContinuousField;
+            _refineCoastClusters = manifest.GeneratorVersion >= 13 && !_useContinuousField;
+            _separateContinents = manifest.GeneratorVersion >= 14;
             _settings = manifest.Generation;
             _scale = MathF.Min(_height, MathF.Sqrt((float)_width * _height / _settings.Continents));
             _coastDetail = _settings.CoastDetail * 0.01f;
@@ -47,20 +51,36 @@ public static partial class WorldGenerator
             _ridges = _settings.Stage >= GenerationStage.Relief ? new float[_scores.Length] : null;
         }
 
-        public (float[] Scores, float[]? Ridges, float SeaLevel) Build(Action<GenerationProgress>? progress)
+        public (float[] Scores, float[]? Ridges, float SeaLevel, WaterType[]? Water) Build(Action<GenerationProgress>? progress)
         {
             int[] centers = PlaceCenters();
             Sculpt(centers, progress);
             SmoothTerrain(progress);
             VisitChunks(_chunks, (i, col, row) =>
             {
-                float detail = 0.64f * FieldNoise(col, row, 5.2f, _seed ^ 0xEA89C12Bu)
-                    + 0.26f * FieldNoise(col, row, 15.7f, _seed ^ 0x67E3314Du)
-                    + 0.10f * FieldNoise(col, row, 43f, _seed ^ 0x9E3779B9u);
-                float polarDistance = Math.Min(row, _height - 1 - row) / (float)_height;
-                float polar = Smooth(Math.Clamp(polarDistance / 0.09f, 0f, 1f));
-                _scores[i] = Interpolate(-1.25f, _scores[i] + (detail - 0.5f) * (0.23f + 0.68f * _coastDetail), polar);
+                if (!_useContinuousField)
+                {
+                    float legacyDetail = 0.64f * FieldNoise(col, row, 5.2f, _seed ^ 0xEA89C12Bu)
+                        + 0.26f * FieldNoise(col, row, 15.7f, _seed ^ 0x67E3314Du)
+                        + 0.10f * FieldNoise(col, row, 43f, _seed ^ 0x9E3779B9u);
+                    float legacyPolarDistance = Math.Min(row, _height - 1 - row) / (float)_height;
+                    float legacyPolar = Smooth(Math.Clamp(legacyPolarDistance / 0.09f, 0f, 1f));
+                    _scores[i] = Interpolate(-1.25f, _scores[i] + (legacyDetail - 0.5f) * (0.23f + 0.68f * _coastDetail), legacyPolar);
+                    return;
+                }
+
+                float detail = SculptedCoastDetail(col, row);
+                float polarWave = (FieldNoise(col, row, 3.2f, _seed ^ 0x3C6EF372u) - 0.5f) * 0.08f
+                    + (detail - 0.5f) * 0.05f;
+                float polarDistance = Math.Min(row, _height - 1 - row) / (float)_height + polarWave;
+                float polar = Smooth(Math.Clamp(polarDistance / 0.13f, 0f, 1f));
+                float edgeFade = Smooth(Math.Clamp(Math.Min(row, _height - 1 - row) / (_height * 0.025f), 0f, 1f));
+                float amplitude = (0.72f + 1.45f * _coastDetail) * edgeFade;
+                _scores[i] = Interpolate(-1.25f, _scores[i], polar) + (detail - 0.5f) * amplitude;
             }, progress, GenerationStep.Land, 70, 80);
+
+            if (_separateContinents)
+                return BuildSeparatedContinents(centers, progress);
 
             float seaLevel = FindSculptedSeaLevel();
             if (_refineShore)
@@ -74,8 +94,10 @@ public static partial class WorldGenerator
                 FinishShoreline(_scores, _width, _height, _wrap, seaLevel, _removeIslandRibbons, progress);
             if (_roundShallowInlets)
                 RoundShallowInlets(_scores, _width, _height, _wrap, seaLevel);
+            if (_refineCoastClusters)
+                RefineCoastClusters(_scores, _width, _height, _wrap, seaLevel);
             progress?.Invoke(new(GenerationStep.Land, 85));
-            return (_scores, _ridges, seaLevel);
+            return (_scores, _ridges, seaLevel, null);
         }
 
         private int[] PlaceCenters()
@@ -305,8 +327,8 @@ public static partial class WorldGenerator
                     continue;
 
                 int radius = Math.Clamp((int)(_scale / 90f), 0, 3);
-                MarkChannel(TraceCurved(entry, saddle, 0.12f), radius);
-                MarkChannel(TraceCurved(saddle, exit, 0.12f), radius);
+                MarkChannel(TraceCurved(entry, saddle, 0.12f), radius, seaLevel);
+                MarkChannel(TraceCurved(saddle, exit, 0.12f), radius, seaLevel);
                 changed = true;
             }
             return changed;
@@ -323,26 +345,57 @@ public static partial class WorldGenerator
             return -1;
         }
 
-        private void MarkChannel(IEnumerable<int> path, int radius)
+        private void MarkChannel(IEnumerable<int> path, int radius, float seaLevel)
         {
+            int bankRadius = _useContinuousField ? radius + Math.Max(5, (int)(_scale * 0.055f)) : radius;
             foreach (int index in path)
             {
                 Hex center = HexAt(index);
-                for (int q = -radius; q <= radius; q++)
-                for (int r = Math.Max(-radius, -q - radius); r <= Math.Min(radius, -q + radius); r++)
+                for (int q = -bankRadius; q <= bankRadius; q++)
+                for (int r = Math.Max(-bankRadius, -q - bankRadius); r <= Math.Min(bankRadius, -q + bankRadius); r++)
                 {
                     var (col, row) = HexGrid.ToOffset(new Hex(center.Q + q, center.R + r));
                     if (_wrap)
                         col = (col + _width) % _width;
-                    // The channel stays submerged when the land percentage is recalibrated.
-                    if ((uint)row < (uint)_height && (uint)col < (uint)_width)
-                        _scores[row * _width + col] = float.NegativeInfinity;
+                    if ((uint)row >= (uint)_height || (uint)col >= (uint)_width)
+                        continue;
+                    int cell = row * _width + col;
+                    int distance = (Math.Abs(q) + Math.Abs(r) + Math.Abs(q + r)) / 2;
+                    if (distance <= radius)
+                    {
+                        // The channel stays submerged when the land percentage is recalibrated.
+                        _scores[cell] = float.NegativeInfinity;
+                        if (_useContinuousField && _ridges is not null)
+                            _ridges[cell] = 0f;
+                        continue;
+                    }
+                    if (float.IsNegativeInfinity(_scores[cell]))
+                        continue;
+                    float noise = FieldNoise(col, row, 19f, _seed ^ 0x517CC1B7u);
+                    float t = Math.Clamp((distance - radius - (noise - 0.5f) * 1.8f) / Math.Max(1f, bankRadius - radius), 0f, 1f);
+                    float blend = Smooth(t);
+                    float shore = seaLevel - 0.05f + (noise - 0.5f) * 0.20f;
+                    float maxScore = Interpolate(shore, seaLevel + 3.2f, blend * blend);
+                    _scores[cell] = Math.Min(_scores[cell], maxScore);
+                    if (_ridges is not null)
+                        _ridges[cell] = Math.Min(_ridges[cell], blend);
                 }
             }
         }
 
-        private int PickNear(int origin, float closest, float farthest) =>
-            PointFrom(origin, _random.NextSingle() * MathF.Tau, _scale * Interpolate(closest, farthest, _random.NextSingle()));
+        private int PickNear(int origin, float closest, float farthest)
+        {
+            float bearing = _random.NextSingle() * MathF.Tau;
+            float distance = _scale * Interpolate(closest, farthest, _random.NextSingle());
+            if (_useContinuousField)
+            {
+                float y = (origin / _width) + MathF.Sin(bearing) * distance * (HexGrid.Root3 / 1.5f);
+                float margin = _height * 0.12f;
+                if (y < margin || y > _height - 1 - margin)
+                    bearing = -bearing;
+            }
+            return PointFrom(origin, bearing, distance);
+        }
 
         private int PointFrom(int origin, float bearing, float distance)
         {
@@ -438,6 +491,24 @@ public static partial class WorldGenerator
 
         private int Neighbor(Hex hex, int direction) => HexGrid.NeighborIndex(hex, direction, _width, _height, _wrap);
 
+        private float SculptedCoastDetail(int col, int row)
+        {
+            float x = (col + (row & 1) * 0.5f) / _height;
+            float y = row / (float)_height;
+            float warp = 0.022f + 0.032f * _coastDetail;
+            float wx = x + (SampleField(x, y, 3.4f, _seed ^ 0xB5297A4Du) - 0.5f) * warp
+                + (SampleField(x, y, 9.8f, _seed ^ 0x1B56C4E9u) - 0.5f) * (warp * 0.38f);
+            float wy = y + (SampleField(x, y, 3.4f, _seed ^ 0x68E31DA4u) - 0.5f) * warp
+                + (SampleField(x, y, 9.8f, _seed ^ 0x165667B1u) - 0.5f) * (warp * 0.38f);
+            return 0.52f * SampleField(wx, wy, 5.2f, _seed ^ 0xEA89C12Bu)
+                + 0.25f * SampleField(wx, wy, 15.7f, _seed ^ 0x67E3314Du)
+                + 0.14f * SampleField(wx, wy, 41f, _seed ^ 0x9E3779B9u)
+                + 0.09f * SampleField(wx, wy, 86f, _seed ^ 0x4CF5AD43u);
+        }
+
+        private float SampleField(float x, float y, float frequency, uint seed)
+            => TerrainNoise(x, y, frequency, _width / (float)_height, _wrap, seed);
+
         private float FieldNoise(int col, int row, float frequency, uint seed)
         {
             float scale = frequency / _height;
@@ -499,7 +570,7 @@ public static partial class WorldGenerator
                 Vector2 segment = _map.WrappedDelta(start, end);
                 end = start + segment;
                 float inverseLength = 1f / Math.Max(0.0001f, segment.LengthSquared());
-                float reach = radius * (stretch == Vector2.Zero ? 1.24f : 1.46f);
+                float reach = radius * (stretch == Vector2.Zero ? 1.38f : 1.62f);
                 float maxDistanceSquared = reach * reach;
                 int top = Math.Max(0, (int)MathF.Ceiling((Math.Min(start.Y, end.Y) - reach) / 1.5f));
                 int bottom = Math.Min(_map._height - 1, (int)MathF.Floor((Math.Max(start.Y, end.Y) + reach) / 1.5f));
@@ -525,7 +596,7 @@ public static partial class WorldGenerator
                         int col = _map._wrap ? (x % _map._width + _map._width) % _map._width : x;
                         float shape = _map.FieldNoise(col, row, 7.7f, seed);
                         float detail = _map.FieldNoise(col, row, 21f, seed ^ 0x85EBCA6Bu);
-                        float width = radius * (0.76f + 0.36f * shape + 0.11f * detail);
+                        float width = radius * (0.64f + 0.50f * shape + 0.22f * detail);
                         float along = Vector2.Dot(delta, stretch);
                         float falloff = 1f - MathF.Sqrt(Math.Max(0f, distanceSquared - along * along)) / width;
                         if (falloff <= 0f)

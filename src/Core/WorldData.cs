@@ -95,7 +95,7 @@ public sealed class WorldData
         {
             int cell = row * Width + column;
             Flags[cell] &= unchecked((byte)~CoastFlag);
-            if (Water[cell] == WaterType.Ocean)
+            if (Water[cell] != WaterType.None)
                 continue;
             Hex hex = HexGrid.FromOffset(column, row);
             for (int direction = 0; direction < 6; direction++)

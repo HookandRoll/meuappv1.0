@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using Godot;
 using Mapmaker.Core;
 
@@ -19,7 +20,7 @@ internal sealed class GlobalDataTextures : IDisposable
     {
         _terrainImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rgba8, buffers.Terrain);
         _climateImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rgba8, buffers.Climate);
-        _detailImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.R8, buffers.Details);
+        _detailImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rg8, buffers.Details);
         Terrain = ImageTexture.CreateFromImage(_terrainImage);
         Climate = ImageTexture.CreateFromImage(_climateImage);
         Details = ImageTexture.CreateFromImage(_detailImage);
@@ -46,10 +47,10 @@ internal sealed class GlobalDataTextures : IDisposable
         if (world.Manifest.Generation.Stage >= GenerationStage.Relief)
             MarkReliefSymbols(world, terrain);
         if (world.Manifest.Generation.Stage == GenerationStage.Terrain)
-            MarkVegetationPatches(world, terrain);
+            MarkVegetationSymbols(world, terrain);
         MarkTightShorelines(world, terrain);
 
-        return new Buffers(terrain, climate, MapDetailIcons.Build(world, terrain));
+        return new Buffers(terrain, climate, OceanShelf.BuildDetails(world, MapDetailIcons.Build(world, terrain)));
     }
 
     private static void MarkTightShorelines(WorldData world, byte[] terrain)
@@ -143,51 +144,66 @@ internal sealed class GlobalDataTextures : IDisposable
         }
     }
 
-    private static void MarkVegetationPatches(WorldData world, byte[] terrain)
+    private static void MarkVegetationSymbols(WorldData world, byte[] terrain)
     {
-        // Seed up to four patches from each logical chunk. A patch may cross a chunk boundary.
-        const int patchSpacing = WorldData.ChunkSize / 2;
-        for (int startRow = 0; startRow < world.Height; startRow += patchSpacing)
-        for (int startColumn = 0; startColumn < world.Width; startColumn += patchSpacing)
+        int width = world.Width;
+        int height = world.Height;
+        float aspect = width / (float)height;
+        bool wrap = world.Manifest.HorizontalWrap;
+        int seed = world.Manifest.Seed;
+        Parallel.For(0, height, row =>
         {
-            uint patch = StableRank((startRow * world.Width + startColumn) ^ world.Manifest.Seed);
-            if ((patch & 7u) == 0)
-                continue;
+            float y = row * 0.8660254f / height;
+            for (int col = 0; col < width; col++)
+            {
+                int cell = row * width + col;
+                if (world.Relief[cell] > ReliefType.Hills)
+                    continue;
 
-            int centerX = Math.Min(world.Width - 1, startColumn + 3 + (int)((patch >> 3) % 10u));
-            int centerY = Math.Min(world.Height - 1, startRow + 3 + (int)((patch >> 11) % 10u));
-            int radiusX = 4 + (int)((patch >> 19) & 3u);
-            int radiusY = 3 + (int)((patch >> 24) & 3u);
-            MarkVegetationPatch(world, terrain, centerX, centerY, radiusX, radiusY);
-        }
+                WaterType water = world.Water[cell];
+                BiomeType biome = world.Biomes[cell];
+                float habitat = (water, biome) switch
+                {
+                    (WaterType.None, BiomeType.TemperateForest) => 0.53f,
+                    (WaterType.None, BiomeType.Rainforest) => 0.62f,
+                    (WaterType.None, BiomeType.Taiga) => 0.43f,
+                    (WaterType.None, BiomeType.Savanna) => 0.20f,
+                    (WaterType.None, BiomeType.Desert) => 0.09f,
+                    (WaterType.Wetland, _) => 0.35f,
+                    _ => 0f
+                };
+                if (habitat == 0f)
+                    continue;
+
+                float x = (col + (row & 1) * 0.5f) / height;
+                float field = 0.53f * WorldGenerator.TerrainNoise(x, y, height / 29f, aspect, wrap, (uint)seed ^ 0x5297A4D1u)
+                    + 0.31f * WorldGenerator.TerrainNoise(x, y, height / 11f, aspect, wrap, (uint)seed ^ 0x68E31DA4u)
+                    + 0.16f * WorldGenerator.TerrainNoise(x, y, height / 4.3f, aspect, wrap, (uint)seed ^ 0x1B56C4E9u);
+                float canopy = Math.Clamp((field - 0.24f) / 0.53f, 0f, 1f);
+                canopy *= canopy * (3f - 2f * canopy);
+                float depth = VegetationInterior(world, HexGrid.FromOffset(col, row), water, biome);
+                float chance = habitat * (0.11f + 0.89f * canopy) * (0.44f + 0.56f * depth);
+                uint rank = StableRank(cell ^ seed ^ 0x517CC1B7);
+                if ((rank >> 8) * (1f / 16777216f) < chance)
+                    terrain[cell * 4 + 3] |= 1 << 7;
+            }
+        });
     }
 
-    private static void MarkVegetationPatch(WorldData world, byte[] terrain, int centerX, int centerY, int radiusX, int radiusY)
+    private static float VegetationInterior(WorldData world, Hex hex, WaterType water, BiomeType biome)
     {
-        for (int row = Math.Max(0, centerY - radiusY); row <= Math.Min(world.Height - 1, centerY + radiusY); row++)
-        for (int x = centerX - radiusX; x <= centerX + radiusX; x++)
+        int contribution = 0;
+        for (int direction = 0; direction < 6; direction++)
         {
-            int column = world.Manifest.HorizontalWrap ? (x + world.Width) % world.Width : x;
-            if ((uint)column >= (uint)world.Width)
+            int near = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, world.Manifest.HorizontalWrap);
+            if (near < 0 || world.Water[near] != water || world.Biomes[near] != biome)
                 continue;
-
-            int cell = row * world.Width + column;
-            if (world.Relief[cell] > ReliefType.Hills)
-                continue;
-            uint rank = StableRank(cell ^ world.Manifest.Seed);
-            float dx = (x - centerX + ((row & 1) - (centerY & 1)) * 0.5f) / radiusX;
-            float dy = (row - centerY) / (float)radiusY;
-            if (dx * dx + dy * dy > 0.73f + (rank & 15u) * 0.022f)
-                continue;
-
-            WaterType water = world.Water[cell];
-            BiomeType biome = world.Biomes[cell];
-            bool wooded = water == WaterType.None && Biomes.IsForest(biome);
-            bool scattered = water == WaterType.Wetland ||
-                (water == WaterType.None && (biome is BiomeType.Savanna or BiomeType.Desert));
-            if ((wooded && rank % 6u != 0) || (scattered && rank % 4u == 0))
-                terrain[cell * 4 + 3] |= 1 << 7;
+            contribution += 2;
+            int farther = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, world.Manifest.HorizontalWrap, steps: 2);
+            if (farther >= 0 && world.Water[farther] == water && world.Biomes[farther] == biome)
+                contribution++;
         }
+        return contribution / 18f;
     }
 
     private static uint StableRank(int cell)

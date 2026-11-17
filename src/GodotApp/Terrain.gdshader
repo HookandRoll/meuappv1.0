@@ -51,11 +51,16 @@ bool inside(ivec2 offset) {
     return all(greaterThanEqual(offset, ivec2(0))) && all(lessThan(offset, map_size));
 }
 
-vec4 sample_terrain(ivec2 hex) {
+ivec2 data_offset(ivec2 hex) {
     ivec2 offset = to_offset(hex);
     if (horizontal_wrap) {
         offset.x = (offset.x + map_size.x) % map_size.x;
     }
+    return offset;
+}
+
+vec4 sample_terrain(ivec2 hex) {
+    ivec2 offset = data_offset(hex);
     if (!inside(offset)) {
         return vec4(0.0, 0.0, 0.0, 1.0 / 255.0);
     }
@@ -112,8 +117,13 @@ vec3 ground_color(vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
     return mix(water != 0 ? OCEAN : biome_color(float(biome)), texel.rgb, texel.a);
 }
 
-vec3 ocean_color(float depth, float land_fraction, vec2 tile_dx, vec2 tile_dy) {
-    float shallow = max(smoothstep(-900.0, -130.0, depth), 0.85 * smoothstep(0.0, 0.55, land_fraction));
+float shelf_distance(ivec2 hex) {
+    ivec2 offset = clamp(data_offset(hex), ivec2(0), map_size - 1);
+    return texelFetch(detail_data, offset, 0).g;
+}
+
+vec3 ocean_color(float distance_to_land, vec2 tile_dx, vec2 tile_dy) {
+    float shallow = 1.0 - smoothstep(0.06, 1.0, distance_to_land);
     float footprint = max(length(tile_dx), length(tile_dy));
     shallow *= mix(1.0, 0.68, smoothstep(0.10, 0.38, footprint));
     // A wave tile spans several hexes and is anchored to the map across shore and ocean.
@@ -157,6 +167,14 @@ vec4 sample_overlay(sampler2DArray atlas, int art, vec2 uv, vec2 dx, vec2 dy, fl
     return texel;
 }
 
+uint vegetation_hash(ivec2 hex) {
+    uvec2 cell = uvec2(data_offset(hex));
+    uint value = (cell.x * 0x9e3779b9u) ^ (cell.y * 0x85ebca6bu);
+    value = (value ^ (value >> 16u)) * 0x7feb352du;
+    value = (value ^ (value >> 15u)) * 0x846ca68bu;
+    return value ^ (value >> 16u);
+}
+
 vec3 decorate(vec3 color, vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
     int surface = surface_bits(data);
     int relief = (surface >> 2) & 7;
@@ -170,7 +188,9 @@ vec3 decorate(vec3 color, vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
     int icon_art = (detail & 31) - 1;
     float close_reveal = smoothstep(0.43, 0.90, detail_zoom);
     float reveal = (detail & 32) != 0 ? close_reveal : 1.0;
-    float shared_layout = (detail & 32) != 0 ? smoothstep(0.30, 0.57, detail_zoom) : 0.0;
+    bool shared_hex = (detail & 32) != 0 ||
+        (show_relief && show_vegetation && (surface & 192) == 192);
+    float shared_layout = shared_hex ? smoothstep(0.30, 0.57, detail_zoom) : 0.0;
     if (show_relief && (surface & 64) != 0) {
         int art = (surface & 32) != 0 ? 4 : relief - 1;
         vec2 anchor = mix(vec2(0.5), vec2(0.5, 0.274), detail_zoom);
@@ -187,9 +207,16 @@ vec3 decorate(vec3 color, vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
             vec2 anchor = mix(vec2(0.5), vec2(0.29, 0.35), detail_zoom);
             vec2 size = mix(vec2(0.97, 0.84), vec2(0.32, 0.278), detail_zoom);
             anchor = mix(anchor, vec2(0.245, 0.40), shared_layout);
-            size = mix(size, vec2(0.24, 0.21), shared_layout);
-            vec2 uv = (tile - anchor) / size + vec2(0.5);
-            vec4 texel = sample_overlay(vegetation_art, art, uv, tile_dx / size, tile_dy / size, minification, 7.0);
+            size = mix(size, vec2(0.20, 0.21), shared_layout);
+            uint rank = vegetation_hash(hex);
+            vec2 offset = vec2(float(rank & 255u), float((rank >> 8u) & 255u)) / 127.5 - 1.0;
+            vec2 jitter = mix(vec2(0.061, 0.050), vec2(0.012, 0.019), shared_layout);
+            anchor += offset * jitter * smoothstep(0.15, 1.0, detail_zoom);
+            float scale = mix(0.88, 1.12, float((rank >> 16u) & 255u) / 255.0);
+            size *= mix(1.0, scale, mix(0.35, 1.0, detail_zoom));
+            vec2 projection = vec2((rank & 0x1000000u) == 0u ? -1.0 : 1.0, 1.0) / size;
+            vec2 uv = (tile - anchor) * projection + vec2(0.5);
+            vec4 texel = sample_overlay(vegetation_art, art, uv, tile_dx * projection, tile_dy * projection, minification, 7.0);
             color = mix(color, texel.rgb, texel.a);
         }
     }
@@ -288,19 +315,17 @@ vec3 terrain_color(vec2 axial, vec4 current, ivec2 current_hex, vec2 tile_dx, ve
     ivec3 types = ivec3(water_type(a), water_type(b), water_type(c));
     int current_type = water_type(current);
     vec3 dry_weights = weights * vec3(equal(types, ivec3(0)));
-    vec3 sea_weights = weights * vec3(equal(types, ivec3(1)));
+    vec3 water_weights = weights * vec3(equal(types, ivec3(current_type)));
     float land_fraction = dot(dry_weights, vec3(1.0));
-    float sea_fraction = dot(sea_weights, vec3(1.0));
-    bool shore = current_type == 1 && land_fraction > 0.0 && sea_fraction > 0.0;
+    float water_fraction = dot(water_weights, vec3(1.0));
+    bool shore = (current_type == 1 || current_type == 2)
+        && land_fraction > 0.0 && water_fraction > 0.0 && land_fraction + water_fraction > 0.99999;
 
     vec3 water = vec3(0.0);
     if (current_type != 0) {
         if (current_type == 1) {
-            float depth = dot(sea_weights, heights) / max(sea_fraction, 0.00001);
-            if (stage == 1) {
-                depth = mix(-900.0, -130.0, smoothstep(0.0, 0.38, land_fraction));
-            }
-            water = ocean_color(depth, land_fraction, tile_dx, tile_dy);
+            float distance_to_land = dot(weights, vec3(shelf_distance(hex_a), shelf_distance(hex_b), shelf_distance(hex_c)));
+            water = ocean_color(distance_to_land, tile_dx, tile_dy);
         } else {
             water = ground_color(current, current_hex, tile_dx, tile_dy);
         }
@@ -315,8 +340,10 @@ vec3 terrain_color(vec2 axial, vec4 current, ivec2 current_hex, vec2 tile_dx, ve
         (ids.x != ids.z && dry_weights.x * dry_weights.z > 0.0) ||
         (ids.y != ids.z && dry_weights.y * dry_weights.z > 0.0));
     vec2 noise = vec2(0.0);
+    float footprint = max(length(tile_dx), length(tile_dy));
     if (shore || blend_biomes) {
-        noise = vec2(coast_noise(map_position, 0.49), coast_noise(map_position, 1.81));
+        noise = vec2(coast_noise(map_position, 0.31),
+            coast_noise(map_position, 1.24) * (1.0 - smoothstep(0.18, 0.70, footprint)));
     }
     float elevation = dot(dry_weights, heights) / max(land_fraction, 0.00001);
     vec3 art_a = dry_weights.x > 0.0 ? ground_color(a, hex_a, tile_dx, tile_dy) : vec3(0.0);
@@ -330,11 +357,14 @@ vec3 terrain_color(vec2 axial, vec4 current, ivec2 current_hex, vec2 tile_dx, ve
             dot(dry_weights.xz, same.xz),
             dot(dry_weights.xy, same.yz));
         vec3 share = biome_weights / land_fraction;
-        vec3 curved = curved_biome_shares(ids, dry_weights / land_fraction);
+        vec3 curved = mix(share, curved_biome_shares(ids, dry_weights / land_fraction), 0.36);
         vec3 phase = ids * 2.39996;
-        vec3 bias = noise.x * sin(phase) + noise.y * cos(phase) * 0.48;
-        vec3 feather = smoothstep(vec3(0.08), vec3(0.92), curved);
-        dry_weights *= feather * (1.0 + bias * 0.26) / max(share, vec3(0.00001));
+        vec3 shift = noise.x * sin(phase) * 0.16 + noise.y * cos(phase) * 0.08;
+        curved += 4.0 * share * (1.0 - share) * shift;
+        float width = clamp(0.38 + noise.x * 0.13 + footprint * 0.10, 0.24, 0.49);
+        vec3 feather = smoothstep(vec3(0.5 - width), vec3(0.5 + width), curved);
+        // Keep a nonzero contribution at junctions where three or more edges meet.
+        dry_weights *= max(feather, share * 0.05) / max(share, vec3(0.00001));
     }
     vec3 land = (art_a * dry_weights.x + art_b * dry_weights.y + art_c * dry_weights.z)
         / max(dot(dry_weights, vec3(1.0)), 0.00001);
@@ -346,10 +376,14 @@ vec3 terrain_color(vec2 axial, vec4 current, ivec2 current_hex, vec2 tile_dx, ve
     // Extend the same land material into the coastal strip, then fade it into the water.
     float crowding = dot(weights, vec3(shore_crowding(a), shore_crowding(b), shore_crowding(c)));
     float tight = smoothstep(0.13, 0.68, crowding);
-    float footprint = max(length(tile_dx), length(tile_dy));
-    float feather = clamp(0.035 + footprint * 0.40, 0.035, 0.11);
-    float edge = mix(0.35, 0.43, tight);
-    float curve = curved_shore(weights, types, edge) + 0.021 * noise.x + 0.012 * noise.y;
+    float feather = clamp(0.025 + footprint * 0.40, 0.025, 0.11);
+    vec2 warped = map_position + noise * 0.31;
+    float contour = coast_noise(warped, 0.73);
+    float fine = coast_noise(warped, 2.45) * (1.0 - smoothstep(0.09, 0.34, footprint));
+    float edge = clamp(mix(0.35, 0.43, tight) + 0.105 * noise.x + 0.065 * contour
+        + 0.045 * noise.y + 0.026 * fine, 0.19, 0.49);
+    float bend = clamp(0.32 + 0.30 * noise.x - 0.23 * contour, 0.04, 0.76);
+    float curve = mix(land_fraction - edge, curved_shore(weights, types, edge), bend);
     float strip = smoothstep(-feather, feather, curve);
     return mix(water, land, strip);
 }

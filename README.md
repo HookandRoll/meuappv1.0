@@ -1,6 +1,6 @@
 # Jota Fantasy Map Maker
 
-**Alpha 1.0** · Criação básica de mapas de fantasia para RPG, com geração de terreno, clima e biomas no Godot 4 .NET.
+**Alpha 1.0.15** · Criação básica de mapas de fantasia para RPG, com geração de terreno, clima e biomas no Godot 4 .NET.
 
 ## Abrir o protótipo
 
@@ -15,7 +15,7 @@ O VS Code pode abrir a pasta inteira. Também é possível compilar com `dotnet 
 - Os presets vão de **128 × 64** a **4096 × 2048**. O maior contém 8.388.608 hexes.
 - No formulário, escolha entre grade vazia, terra e água, relevo ou terreno completo com clima e biomas. Uma grade vazia pode ser preenchida depois em **Mapa → Gerar terreno**.
 - A barra de geração mostra a etapa em andamento e sua porcentagem. Os biomas usam clima e ruído em coordenadas globais, processados em chunks de 32 × 32 hexes. A camada **Terreno** suaviza as transições entre biomas terrestres. A faixa costeira usa a cor da terra vizinha e um contorno irregular sobre o oceano costeiro, que continua sendo inspecionado como água.
-- O padrão para mapas novos é **Escultura continental (estilo Azgaar)**. A escultura forma bacias e cordilheiras por propagação na grade e pode abrir estreitos onde massas vizinhas se unem. A suavização do gerador se concentra nas margens da água e nas transições entre biomas. **Ruído fractal (fBm)** e **Centros de massas de terra** também estão disponíveis. A quantidade de continentes indica o número de massas iniciais. A seed, a área de terra alvo e a irregularidade da costa influenciam o resultado.
+- O padrão para mapas novos é **Escultura continental (estilo Azgaar)**. A partir do gerador v14, esse modo distribui a terra entre a quantidade de continentes solicitada, com passagem de água entre as massas. Bacias sem ligação ao oceano viram lagos. A seed, a área de terra alvo e a irregularidade da costa influenciam os contornos, e o clima local dá forma às transições de biomas. **Ruído fractal (fBm)** e **Centros de massas de terra** também estão disponíveis.
 - Use a roda do mouse para aproximar, arraste com o botão direito ou do meio para mover e clique para inspecionar um hex.
 - O controle **Ícones** na barra superior alterna a camada de flora, fauna e detalhes. Os símbolos aparecem ao aproximar o terreno e são distribuídos pela seed conforme o bioma, o relevo e a água.
 - **Salvar** (`Ctrl+S`), **Salvar como** (`Ctrl+Shift+S`) e **Abrir último mapa** ficam no menu **Mapa**. O menu **Editar** já mostra os comandos previstos para a próxima fase.
