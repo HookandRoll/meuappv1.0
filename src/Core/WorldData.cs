@@ -37,6 +37,7 @@ public sealed class WorldData
     public int Width => Manifest.Width;
     public int Height => Manifest.Height;
     public int Count => Elevation.Length;
+    public ChunkGrid Chunks => new(Width, Height);
     public short[] Elevation { get; }
     public WaterType[] Water { get; }
     public ReliefType[] Relief { get; }
@@ -48,6 +49,8 @@ public sealed class WorldData
     public byte[] Flags { get; }
     public ushort[] LockMask { get; }
     public JsonElement SparseEntities { get; internal set; }
+    // The sea level is derived from the manifest and recalibrated on demand after opening a save.
+    internal float GeneratedSeaLevel { get; set; } = float.NaN;
 
     public WorldData(WorldManifest manifest)
     {

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using Godot;
 using Mapmaker.Core;
@@ -9,6 +10,7 @@ namespace Mapmaker.GodotApp;
 public partial class MapView
 {
     private enum MapAction { New = 100, Open, Recent, Save, SaveAs, Generate }
+    private const int ProgressValuesPerStep = 101;
 
     private Control _emptyState = null!;
     private Control _mapControls = null!;
@@ -23,6 +25,10 @@ public partial class MapView
     private FileDialog _saveDialog = null!;
     private ConfirmationDialog _discardDialog = null!;
     private AcceptDialog _message = null!;
+    private Control _generationStatus = null!;
+    private Label _generationStep = null!;
+    private ProgressBar _generationBar = null!;
+    private int _reportedProgress;
     private Action? _afterDiscard;
     private string? _currentPath;
     private string? _recentPath;
@@ -46,6 +52,14 @@ public partial class MapView
         _inspection.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
         _inspection.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
         _performance = AddLabel(footer, "", 14, Ink);
+
+        HBoxContainer generation = AddBar(hud, Control.LayoutPreset.BottomWide, -65, -18);
+        _generationStatus = (Control)generation.GetParent();
+        _generationStep = AddLabel(generation, "", 14, Ink);
+        _generationStep.CustomMinimumSize = new Vector2(176, 0);
+        _generationBar = new ProgressBar { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        generation.AddChild(_generationBar);
+        _generationStatus.Hide();
 
         _creation = new WorldCreationDialog();
         _creation.CreateRequested = (manifest, fillingBlank) => _ = CreateWorldAsync(manifest, fillingBlank);
@@ -227,13 +241,46 @@ public partial class MapView
     {
         await RunOperation("Criando mapa…", async () =>
         {
-            WorldData world = await Task.Run(() => WorldGenerator.Create(manifest));
-            InstallWorld(world);
-            if (!fillingBlank)
-                _currentPath = null;
-            _dirty = true;
-            SelectHex(new Vector2I(-1, -1));
+            bool generated = manifest.Generation.Stage != GenerationStage.Blank;
+            if (generated)
+            {
+                _reportedProgress = 0;
+                UpdateGenerationStatus();
+                _generationStatus.Show();
+                RefreshInterface();
+            }
+            try
+            {
+                var (world, buffers) = await Task.Run(() =>
+                {
+                    WorldData result = WorldGenerator.Create(manifest, ReportGenerationProgress);
+                    GlobalDataTextures.Buffers? data = generated ? GlobalDataTextures.BuildBuffers(result) : null;
+                    return (result, data);
+                });
+                InstallWorld(world, buffers);
+                if (!fillingBlank)
+                    _currentPath = null;
+                _dirty = true;
+            }
+            finally
+            {
+                _generationStatus.Hide();
+            }
         });
+    }
+
+    private void ReportGenerationProgress(GenerationProgress progress) =>
+        Volatile.Write(ref _reportedProgress, (int)progress.Step * ProgressValuesPerStep + progress.Percent);
+
+    private void UpdateGenerationStatus()
+    {
+        int progress = Volatile.Read(ref _reportedProgress);
+        _generationStep.Text = (GenerationStep)(progress / ProgressValuesPerStep) switch
+        {
+            GenerationStep.Land => "Terra e água", GenerationStep.Elevation => "Elevação e relevo",
+            GenerationStep.Climate => "Temperatura e chuva", GenerationStep.Biomes => "Biomas", _ => ""
+        };
+        _generationBar.Value = progress % ProgressValuesPerStep;
     }
 
     private async Task OpenWorldAsync(string path)
@@ -322,7 +369,7 @@ public partial class MapView
     {
         bool hasMap = _world is not null;
         _emptyState.Visible = !hasMap;
-        _footer.Visible = hasMap;
+        _footer.Visible = hasMap && !_generationStatus.Visible;
         _mapControls.Visible = hasMap;
         _title.Text = hasMap ? _world!.Manifest.WorldName + (_dirty ? " •" : "") : "World Simulation RPG";
         _mapMenu.Disabled = _busy;

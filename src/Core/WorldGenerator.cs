@@ -3,91 +3,206 @@ using System.Threading.Tasks;
 
 namespace Mapmaker.Core;
 
-public static class WorldGenerator
-{
-    public const int Version = 4;
-    private const int HistogramSize = 2048;
+public enum GenerationStep { Land, Elevation, Climate, Biomes }
 
-    public static WorldData Create(WorldManifest manifest)
+public readonly record struct GenerationProgress(GenerationStep Step, int Percent);
+
+public static partial class WorldGenerator
+{
+    public const int Version = 5;
+    private const int HistogramSize = 2048;
+    // Two forest growth passes read up to two hexes away each. Cleanup reads one more.
+    private const int ForestMargin = 5;
+
+    public static WorldData Create(WorldManifest manifest, Action<GenerationProgress>? progress = null)
     {
         var world = new WorldData(manifest);
-        GenerationSettings settings = manifest.Generation;
-        if (settings.Stage == GenerationStage.Blank)
+        if (manifest.Generation.Stage == GenerationStage.Blank)
             return world;
-        if (manifest.GeneratorVersion != Version)
+
+        var area = new GenerationArea(world, new WorldRegion(0, 0, world.Width, world.Height), useWorldArrays: true);
+        Generate(world, area, progress);
+        return world;
+    }
+
+    /// <summary>Restores the generated terrain in an offset-coordinate rectangle using the world's seed and settings.</summary>
+    public static void RegenerateRegion(WorldData world, WorldRegion region, Action<GenerationProgress>? progress = null)
+    {
+        if (region.Width <= 0 || region.Height <= 0 || region.Column < 0 || region.Row < 0 ||
+            region.Column > world.Width - region.Width || region.Row > world.Height - region.Height)
+            throw new ArgumentOutOfRangeException(nameof(region));
+        if (world.Manifest.Generation.Stage == GenerationStage.Blank)
+            return;
+
+        int margin = world.Manifest.Generation.Stage == GenerationStage.Terrain
+            ? ForestMargin + Math.Max(1, world.Height / 96) : 1;
+        var area = new GenerationArea(world, ExpandRegion(world, region, margin));
+        Generate(world, area, progress);
+        area.CopyRegionTo(world, region);
+    }
+
+    private static WorldRegion ExpandRegion(WorldData world, WorldRegion region, int margin)
+    {
+        int top = Math.Max(0, region.Row - margin);
+        int bottom = Math.Min(world.Height, region.Row + region.Height + margin);
+        if (world.Manifest.HorizontalWrap)
+        {
+            int width = region.Width + 2 * margin;
+            return width >= world.Width
+                ? new WorldRegion(0, top, world.Width, bottom - top)
+                : new WorldRegion(region.Column - margin, top, width, bottom - top);
+        }
+        int left = Math.Max(0, region.Column - margin);
+        int right = Math.Min(world.Width, region.Column + region.Width + margin);
+        return new WorldRegion(left, top, right - left, bottom - top);
+    }
+
+    private static void Generate(WorldData world, GenerationArea area, Action<GenerationProgress>? progress)
+    {
+        WorldManifest manifest = world.Manifest;
+        if (manifest.GeneratorVersion is not (4 or Version))
             throw new ArgumentException($"Versão do gerador não suportada: {manifest.GeneratorVersion}.", nameof(manifest));
 
-        var scores = new float[world.Count];
+        GenerationSettings settings = manifest.Generation;
         float aspect = world.Width / (float)world.Height;
         LandLobe[] lobes = PlaceLandmasses(settings.Continents, manifest.Seed, aspect);
         uint seed = unchecked((uint)manifest.Seed);
         float coast = settings.CoastDetail * 0.01f;
         bool fractal = settings.Algorithm == TerrainAlgorithm.Fractal;
-
-        Parallel.For(0, world.Height, row =>
+        float seaLevel = world.GeneratedSeaLevel;
+        float[]? scores = float.IsNaN(seaLevel) ? new float[world.Count] : null;
+        float SampleScore(int col, int row)
         {
-            for (int col = 0; col < world.Width; col++)
-            {
-                float x = (col + (row & 1) * 0.5f) / world.Width;
-                float y = (float)row / world.Height;
-                scores[row * world.Width + col] = LandScore(x, y, aspect, lobes, seed, coast, fractal);
-            }
-        });
+            float x = (col + (row & 1) * 0.5f) / world.Width;
+            return LandScore(x, (float)row / world.Height, aspect, lobes, seed, coast, fractal);
+        }
+        float ScoreAt(int col, int row) => scores is null ? SampleScore(col, row) : scores[row * world.Width + col];
 
-        float seaLevel = FindSeaLevel(scores, settings.LandPercent);
+        progress?.Invoke(new(GenerationStep.Land, 0));
+        if (scores is not null)
+        {
+            VisitChunks(world.Chunks, (index, col, row) => scores[index] = SampleScore(col, row),
+                progress, GenerationStep.Land, 0, 85);
+            seaLevel = FindSeaLevel(scores, settings.LandPercent);
+            world.GeneratedSeaLevel = seaLevel;
+        }
+        VisitChunks(area.Chunks, (i, col, row) =>
+        {
+            bool ocean = ScoreAt(area.WorldColumn(col), area.WorldRow(row)) < seaLevel;
+            area.Water[i] = ocean ? WaterType.Ocean : WaterType.None;
+            area.Elevation[i] = ocean ? (short)-1 : (short)0;
+        }, progress, GenerationStep.Land, scores is null ? 0 : 85, settings.Stage == GenerationStage.Land ? 95 : 100);
+
+        if (settings.Stage == GenerationStage.Land)
+        {
+            RebuildCoast(area, progress, GenerationStep.Land, 95);
+            return;
+        }
+
+        bool terrain = settings.Stage == GenerationStage.Terrain;
+        bool[] openPlains = terrain ? new bool[area.Count] : Array.Empty<bool>();
+        progress?.Invoke(new(GenerationStep.Elevation, 0));
+        VisitChunks(area.Chunks, (i, col, row) =>
+        {
+            col = area.WorldColumn(col);
+            row = area.WorldRow(row);
+            float altitude = ScoreAt(col, row) - seaLevel;
+            float plain = 0f;
+            short elevation;
+            if (area.Water[i] == WaterType.Ocean)
+                elevation = (short)Math.Min(-1, Math.Clamp(altitude * 2500, -6000f, 0f));
+            else
+                (elevation, plain) = LandElevation((float)col / world.Width, (float)row / world.Height, aspect, altitude, seed);
+
+            area.Elevation[i] = elevation;
+            area.Relief[i] = elevation switch
+            {
+                >= 3200 => ReliefType.Peak, >= 1850 => ReliefType.Mountains,
+                >= 650 => ReliefType.Hills, >= 220 => ReliefType.Rolling, _ => ReliefType.Flat
+            };
+            if (terrain)
+                openPlains[i] = plain >= 0.73f && area.Relief[i] == ReliefType.Flat;
+        }, progress, GenerationStep.Elevation, 0, 90);
+        RebuildCoast(area, progress, GenerationStep.Elevation, 90);
+        if (!terrain)
+            return;
+
         int climateRadius = Math.Max(1, world.Height / 24);
-        bool[] openPlains = settings.Stage == GenerationStage.Terrain ? new bool[world.Count] : Array.Empty<bool>();
-        Parallel.For(0, world.Height, row =>
+        progress?.Invoke(new(GenerationStep.Climate, 0));
+        VisitChunks(area.Chunks, (i, col, row) =>
         {
-            for (int col = 0; col < world.Width; col++)
+            col = area.WorldColumn(col);
+            row = area.WorldRow(row);
+            float maritime = area.Water[i] == WaterType.Ocean ? 1f
+                : SeaExposure(ScoreAt, seaLevel, world.Width, world.Height, col, row, climateRadius);
+            (area.Temperature[i], area.Rainfall[i]) = Climate((float)col / world.Width, (float)row / world.Height,
+                aspect, area.Elevation[i], maritime, seed);
+        }, progress, GenerationStep.Climate, 0, 100);
+
+        progress?.Invoke(new(GenerationStep.Biomes, 0));
+        int inlandSteps = Math.Max(1, world.Height / 96);
+        VisitChunks(area.Chunks, (i, col, row) =>
+        {
+            if (area.Water[i] == WaterType.Ocean)
+                return;
+            short temperature = area.Temperature[i];
+            ushort rainfall = area.Rainfall[i];
+            openPlains[i] &= temperature > 45 && rainfall < (temperature >= 225 ? 1450 : 1700);
+            if ((area.Flags[i] & WorldData.CoastFlag) != 0 && area.Elevation[i] <= 200 &&
+                IsSandyCoast(area, i, col, row, inlandSteps, seed))
             {
-                int i = row * world.Width + col;
-                float altitude = scores[i] - seaLevel;
-                bool ocean = altitude < 0f;
-                world.Water[i] = ocean ? WaterType.Ocean : WaterType.None;
-                if (settings.Stage == GenerationStage.Land)
-                {
-                    world.Elevation[i] = ocean ? (short)-1 : (short)0;
-                    continue;
-                }
-
-                float x = (float)col / world.Width;
-                float y = (float)row / world.Height;
-                float plain = 0f;
-                short elevation;
-                if (ocean)
-                {
-                    elevation = (short)Math.Min(-1, Math.Clamp(altitude * 2500, -6000f, 0f));
-                }
-                else
-                {
-                    (elevation, plain) = LandElevation(x, y, aspect, altitude, seed);
-                }
-                world.Elevation[i] = elevation;
-                world.Relief[i] = elevation switch
-                {
-                    >= 3200 => ReliefType.Peak, >= 1850 => ReliefType.Mountains,
-                    >= 650 => ReliefType.Hills, >= 220 => ReliefType.Rolling, _ => ReliefType.Flat
-                };
-                if (settings.Stage != GenerationStage.Terrain)
-                    continue;
-
-                float maritime = ocean ? 1f : SeaExposure(scores, seaLevel, world.Width, world.Height, col, row, climateRadius);
-                var (temperature, rainfall) = Climate(x, y, aspect, elevation, maritime, seed);
-                world.Temperature[i] = temperature;
-                world.Rainfall[i] = rainfall;
-                if (!ocean)
-                {
-                    openPlains[i] = plain >= 0.73f && world.Relief[i] == ReliefType.Flat &&
-                        temperature > 45 && rainfall < (temperature >= 225 ? 1450 : 1700);
-                    world.Biomes[i] = ChooseBiome(elevation, temperature, rainfall, forests: !openPlains[i]);
-                }
+                area.Biomes[i] = BiomeType.Beach;
+                return;
             }
-        });
-        world.RebuildCoast();
-        if (settings.Stage == GenerationStage.Terrain)
-            RefineLandBiomes(world, openPlains, seed);
-        return world;
+            if (manifest.GeneratorVersion == Version)
+            {
+                // Bend climate thresholds locally, while keeping the underlying climate values intact.
+                float x = area.WorldColumn(col) * 32f / world.Height;
+                float y = area.WorldRow(row) * 32f / world.Height;
+                float variation = Noise(x, y, seed ^ 0xB82F1E49u) + 0.35f * Noise(x * 2.1f, y * 2.1f, seed ^ 0x6DD15B57u) - 0.675f;
+                rainfall = (ushort)Math.Max(0, rainfall + (int)(variation * 220f));
+            }
+            area.Biomes[i] = ChooseBiome(area.Elevation[i], temperature, rainfall, forests: !openPlains[i]);
+        }, progress, GenerationStep.Biomes, 0, 65);
+        RefineLandBiomes(area, openPlains, progress);
+    }
+
+    private static void VisitChunks(ChunkGrid chunks, Action<int, int, int> visit,
+        Action<GenerationProgress>? progress, GenerationStep step, int from, int to)
+    {
+        // Report in order from the caller. Parallel workers never touch UI or call progress handlers.
+        int batches = progress is null || chunks.Count < 32 ? 1 : Math.Min(20, (chunks.Count + 15) / 16);
+        for (int batch = 0; batch < batches; batch++)
+        {
+            int start = batch * chunks.Count / batches;
+            int end = (batch + 1) * chunks.Count / batches;
+            Parallel.For(start, end, index =>
+            {
+                WorldRegion chunk = chunks.GetChunk(index);
+                for (int row = chunk.Row; row < chunk.Row + chunk.Height; row++)
+                for (int col = chunk.Column; col < chunk.Column + chunk.Width; col++)
+                    visit(row * chunks.Width + col, col, row);
+            });
+            progress?.Invoke(new(step, from + (to - from) * end / chunks.Count));
+        }
+    }
+
+    private static void RebuildCoast(GenerationArea area, Action<GenerationProgress>? progress, GenerationStep step, int from)
+    {
+        VisitChunks(area.Chunks, (i, col, row) =>
+        {
+            if (area.Water[i] == WaterType.Ocean)
+                return;
+            Hex hex = area.WorldHex(col, row);
+            for (int direction = 0; direction < 6; direction++)
+            {
+                int neighbor = area.Neighbor(hex, direction);
+                if (neighbor < 0 || area.Water[neighbor] != WaterType.Ocean)
+                    continue;
+                area.Flags[i] |= WorldData.CoastFlag;
+                break;
+            }
+        }, progress, step, from, 100);
     }
 
     private static (short Elevation, float Plain) LandElevation(float x, float y, float aspect, float altitude, uint seed)
@@ -118,124 +233,98 @@ public static class WorldGenerator
         _ => BiomeType.Grassland
     };
 
-    private static void RefineLandBiomes(WorldData world, bool[] openPlains, uint seed)
-    {
-        int width = world.Width;
-        int height = world.Height;
-        int inlandSteps = Math.Max(1, height / 96);
-        bool wrap = world.Manifest.HorizontalWrap;
-        Parallel.For(0, height, row =>
-        {
-            for (int column = 0; column < width; column++)
-            {
-                int i = row * width + column;
-                if ((world.Flags[i] & WorldData.CoastFlag) != 0 && world.Water[i] == WaterType.None &&
-                    world.Elevation[i] <= 200 && IsSandyCoast(world, HexGrid.FromOffset(column, row), i, column, row, inlandSteps, seed))
-                    world.Biomes[i] = BiomeType.Beach;
-            }
-        });
 
-        var grown = new BiomeType[world.Count];
-        GrowForest(world, openPlains, world.Biomes, grown);
-        GrowForest(world, openPlains, grown, world.Biomes);
-        Array.Copy(world.Biomes, grown, world.Count);
-        Parallel.For(0, height, row =>
+    private static void RefineLandBiomes(GenerationArea area, bool[] openPlains, Action<GenerationProgress>? progress)
+    {
+        var grown = new BiomeType[area.Count];
+        GrowForest(area, openPlains, area.Biomes, grown, progress, 65, 79);
+        GrowForest(area, openPlains, grown, area.Biomes, progress, 79, 93);
+        Array.Copy(area.Biomes, grown, area.Count);
+        VisitChunks(area.Chunks, (i, col, row) =>
         {
-            for (int column = 0; column < width; column++)
-            {
-                int i = row * width + column;
-                if (Biomes.IsForest(grown[i]) && ForestNeighbors(grown, HexGrid.FromOffset(column, row), width, height, wrap) == 0)
-                    world.Biomes[i] = ChooseBiome(world.Elevation[i], world.Temperature[i], world.Rainfall[i], forests: false);
-            }
-        });
+            if (Biomes.IsForest(grown[i]) && ForestNeighbors(area, grown, area.WorldHex(col, row)) == 0)
+                area.Biomes[i] = ChooseBiome(area.Elevation[i], area.Temperature[i], area.Rainfall[i], forests: false);
+        }, progress, GenerationStep.Biomes, 93, 100);
     }
 
-    private static void GrowForest(WorldData world, bool[] openPlains, BiomeType[] source, BiomeType[] target)
+    private static void GrowForest(GenerationArea area, bool[] openPlains, BiomeType[] source, BiomeType[] target,
+        Action<GenerationProgress>? progress, int from, int to)
     {
-        int width = world.Width;
-        int height = world.Height;
-        bool wrap = world.Manifest.HorizontalWrap;
-        Parallel.For(0, height, row =>
+        VisitChunks(area.Chunks, (i, col, row) =>
         {
-            for (int column = 0; column < width; column++)
-            {
-                int i = row * width + column;
-                BiomeType type = source[i];
-                target[i] = type;
-                if (openPlains[i] || !CanExtendForest(world, i, type))
-                    continue;
+            BiomeType type = source[i];
+            target[i] = type;
+            if (openPlains[i] || !CanExtendForest(area, i, type))
+                return;
 
-                short temperature = world.Temperature[i];
-                ushort rain = world.Rainfall[i];
-                Hex hex = HexGrid.FromOffset(column, row);
-                int mask = ForestNeighbors(source, hex, width, height, wrap);
-                // Opposite neighbors can close a gap. Three surrounding neighbors can join a concave edge.
-                if ((mask & (mask >> 3)) == 0 && System.Numerics.BitOperations.PopCount((uint)mask) < 3 &&
-                    !BridgesForestGap(world, openPlains, source, hex, mask, width, height, wrap))
-                    continue;
+            short temperature = area.Temperature[i];
+            ushort rain = area.Rainfall[i];
+            Hex hex = area.WorldHex(col, row);
+            int mask = ForestNeighbors(area, source, hex);
+            // Opposite neighbors can close a gap. Three surrounding neighbors can join a concave edge.
+            if ((mask & (mask >> 3)) == 0 && System.Numerics.BitOperations.PopCount((uint)mask) < 3 &&
+                !BridgesForestGap(area, openPlains, source, hex, mask))
+                return;
 
-                target[i] = temperature <= 45 ? BiomeType.Taiga
-                    : temperature >= 225 && rain >= 1360 ? BiomeType.Rainforest : BiomeType.TemperateForest;
-            }
-        });
+            target[i] = temperature <= 45 ? BiomeType.Taiga
+                : temperature >= 225 && rain >= 1360 ? BiomeType.Rainforest : BiomeType.TemperateForest;
+        }, progress, GenerationStep.Biomes, from, to);
     }
 
-    private static bool CanExtendForest(WorldData world, int i, BiomeType type)
+    private static bool CanExtendForest(GenerationArea area, int i, BiomeType type)
     {
-        short temperature = world.Temperature[i];
+        short temperature = area.Temperature[i];
         return (type is BiomeType.Grassland or BiomeType.Savanna) &&
-            world.Water[i] == WaterType.None && temperature >= -30 && world.Elevation[i] <= 2850 &&
-            world.Rainfall[i] >= (temperature <= 45 ? 360 : 710);
+            area.Water[i] == WaterType.None && temperature >= -30 && area.Elevation[i] <= 2850 &&
+            area.Rainfall[i] >= (temperature <= 45 ? 360 : 710);
     }
 
-    private static bool BridgesForestGap(WorldData world, bool[] openPlains, BiomeType[] source, Hex hex,
-        int mask, int width, int height, bool wrap)
+    private static bool BridgesForestGap(GenerationArea area, bool[] openPlains, BiomeType[] source, Hex hex, int mask)
     {
         for (int direction = 0; direction < 6; direction++)
         {
             if ((mask & (1 << direction)) != 0)
                 continue;
-            int neighbor = HexGrid.NeighborIndex(hex, direction, width, height, wrap);
-            if (neighbor < 0 || openPlains[neighbor] || !CanExtendForest(world, neighbor, source[neighbor]))
+            int neighbor = area.Neighbor(hex, direction);
+            if (neighbor < 0 || openPlains[neighbor] || !CanExtendForest(area, neighbor, source[neighbor]))
                 continue;
-            int farther = HexGrid.NeighborIndex(hex, direction, width, height, wrap, steps: 2);
+            int farther = area.Neighbor(hex, direction, steps: 2);
             if (farther >= 0 && Biomes.IsForest(source[farther]))
                 mask |= 1 << direction;
         }
         return (mask & (mask >> 3)) != 0;
     }
 
-    private static int ForestNeighbors(BiomeType[] biomes, Hex hex, int width, int height, bool wrap)
+    private static int ForestNeighbors(GenerationArea area, BiomeType[] biomes, Hex hex)
     {
         int mask = 0;
         for (int direction = 0; direction < 6; direction++)
         {
-            int neighbor = HexGrid.NeighborIndex(hex, direction, width, height, wrap);
+            int neighbor = area.Neighbor(hex, direction);
             if (neighbor >= 0 && Biomes.IsForest(biomes[neighbor]))
                 mask |= 1 << direction;
         }
         return mask;
     }
 
-    private static bool IsSandyCoast(WorldData world, Hex hex, int i, int column, int row, int steps, uint seed)
+    private static bool IsSandyCoast(GenerationArea area, int i, int column, int row, int steps, uint seed)
     {
-        float sediment = Noise(16f * column / world.Height, 16f * row / world.Height, seed ^ 0xA24BAED5u);
-        if (sediment < 0.32f || world.Temperature[i] <= -65)
+        float sediment = Noise(16f * area.WorldColumn(column) / area.WorldHeight,
+            16f * area.WorldRow(row) / area.WorldHeight, seed ^ 0xA24BAED5u);
+        if (sediment < 0.32f || area.Temperature[i] <= -65)
             return false;
 
-        int width = world.Width;
-        int height = world.Height;
-        bool wrap = world.Manifest.HorizontalWrap;
+        Hex hex = area.WorldHex(column, row);
         for (int direction = 0; direction < 6; direction++)
         {
-            int water = HexGrid.NeighborIndex(hex, direction, width, height, wrap);
-            if (water < 0 || world.Water[water] != WaterType.Ocean)
+            int water = area.Neighbor(hex, direction);
+            if (water < 0 || area.Water[water] != WaterType.Ocean)
                 continue;
 
-            int inland = HexGrid.NeighborIndex(hex, (direction + 3) % 6, width, height, wrap, steps);
-            int shelf = HexGrid.NeighborIndex(hex, direction, width, height, wrap, steps);
-            int rise = inland < 0 ? 0 : Math.Max(0, world.Elevation[inland] - world.Elevation[i]);
-            int depth = shelf < 0 ? 0 : Math.Max(0, -(int)world.Elevation[shelf]);
+            int inland = area.Neighbor(hex, (direction + 3) % 6, steps);
+            int shelf = area.Neighbor(hex, direction, steps);
+            int rise = inland < 0 ? 0 : Math.Max(0, area.Elevation[inland] - area.Elevation[i]);
+            int depth = shelf < 0 ? 0 : Math.Max(0, -(int)area.Elevation[shelf]);
             if (rise + depth * 0.45f < 115f + 320f * sediment)
                 return true;
         }
@@ -265,12 +354,12 @@ public static class WorldGenerator
         return (temperature, rainfall);
     }
 
-    private static float SeaExposure(float[] scores, float level, int width, int height, int x, int y, int radius)
+    private static float SeaExposure(Func<int, int, float> scoreAt, float level, int width, int height, int x, int y, int radius)
     {
-        float west = scores[y * width + Math.Max(0, x - radius)];
-        float east = scores[y * width + Math.Min(width - 1, x + radius)];
-        float north = scores[Math.Max(0, y - radius) * width + x];
-        float south = scores[Math.Min(height - 1, y + radius) * width + x];
+        float west = scoreAt(Math.Max(0, x - radius), y);
+        float east = scoreAt(Math.Min(width - 1, x + radius), y);
+        float north = scoreAt(x, Math.Max(0, y - radius));
+        float south = scoreAt(x, Math.Min(height - 1, y + radius));
         float lowest = Math.Min(Math.Min(west, east), Math.Min(north, south));
         return Smooth(Math.Clamp((level - lowest + 0.06f) / 0.28f, 0f, 1f));
     }

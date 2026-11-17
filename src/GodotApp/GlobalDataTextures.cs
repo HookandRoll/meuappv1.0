@@ -11,7 +11,17 @@ internal sealed class GlobalDataTextures : IDisposable
     public ImageTexture Terrain { get; }
     public ImageTexture Climate { get; }
 
-    public GlobalDataTextures(WorldData world)
+    internal readonly record struct Buffers(byte[] Terrain, byte[] Climate);
+
+    public GlobalDataTextures(WorldData world, Buffers buffers)
+    {
+        _terrainImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rgba8, buffers.Terrain);
+        _climateImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rgba8, buffers.Climate);
+        Terrain = ImageTexture.CreateFromImage(_terrainImage);
+        Climate = ImageTexture.CreateFromImage(_climateImage);
+    }
+
+    public static Buffers BuildBuffers(WorldData world)
     {
         byte[] terrain = new byte[world.Width * world.Height * 4];
         byte[] climate = new byte[terrain.Length];
@@ -34,10 +44,7 @@ internal sealed class GlobalDataTextures : IDisposable
         if (world.Manifest.Generation.Stage == GenerationStage.Terrain)
             MarkVegetationPatches(world, terrain);
 
-        _terrainImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rgba8, terrain);
-        _climateImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rgba8, climate);
-        Terrain = ImageTexture.CreateFromImage(_terrainImage);
-        Climate = ImageTexture.CreateFromImage(_climateImage);
+        return new Buffers(terrain, climate);
     }
 
     public void UploadAll()

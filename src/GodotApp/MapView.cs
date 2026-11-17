@@ -60,6 +60,8 @@ public partial class MapView : Node2D
 
     public override void _Process(double delta)
     {
+        if (_generationStatus.Visible)
+            UpdateGenerationStatus();
         if (_world is not WorldData world)
             return;
         _statusTime += delta;
@@ -99,10 +101,11 @@ public partial class MapView : Node2D
         }
     }
 
-    private void InstallWorld(WorldData world)
+    private void InstallWorld(WorldData world, GlobalDataTextures.Buffers? buffers = null)
     {
         GenerationStage stage = world.Manifest.Generation.Stage;
-        GlobalDataTextures? nextTextures = stage == GenerationStage.Blank ? null : new GlobalDataTextures(world);
+        GlobalDataTextures? nextTextures = stage == GenerationStage.Blank ? null
+            : new GlobalDataTextures(world, buffers ?? GlobalDataTextures.BuildBuffers(world));
         if (stage != GenerationStage.Blank && _artwork is null)
         {
             _artwork = new MapArtwork();
@@ -115,6 +118,7 @@ public partial class MapView : Node2D
         _material.SetShaderParameter("climate_data", nextTextures is null ? default : Variant.From(nextTextures.Climate));
         _material.SetShaderParameter("map_size", new Vector2I(world.Width, world.Height));
         _material.SetShaderParameter("stage", (int)stage);
+        _material.SetShaderParameter("horizontal_wrap", world.Manifest.HorizontalWrap);
         _material.SetShaderParameter("classified_beaches", stage == GenerationStage.Terrain && world.Manifest.GeneratorVersion >= 3);
         previousTextures?.Dispose();
 
@@ -184,7 +188,8 @@ public partial class MapView : Node2D
         if (stage >= GenerationStage.Land)
             label += world.Water[i] switch
             {
-                WaterType.Ocean => "  ·  Oceano", WaterType.Lake => "  ·  Lago",
+                WaterType.Ocean => IsCoastalOcean(world, axial) ? "  ·  Oceano costeiro" : "  ·  Oceano",
+                WaterType.Lake => "  ·  Lago",
                 WaterType.Wetland => "  ·  Pântano", _ => "  ·  Terra"
             };
         if (stage >= GenerationStage.Relief)
@@ -192,6 +197,17 @@ public partial class MapView : Node2D
         if (stage >= GenerationStage.Terrain)
             label += $"  ·  {BiomeLabel(world.Biomes[i])}  ·  {world.Temperature[i] * 0.1:F1} °C  ·  {world.Rainfall[i]} mm/ano";
         _inspection.Text = label;
+    }
+
+    private static bool IsCoastalOcean(WorldData world, Hex hex)
+    {
+        for (int direction = 0; direction < 6; direction++)
+        {
+            int neighbor = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, world.Manifest.HorizontalWrap);
+            if (neighbor >= 0 && world.Water[neighbor] == WaterType.None)
+                return true;
+        }
+        return false;
     }
 
     private static string ReliefLabel(ReliefType relief) => relief switch

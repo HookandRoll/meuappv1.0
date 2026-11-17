@@ -10,6 +10,7 @@ uniform ivec2 map_size;
 uniform int layer;
 uniform int stage;
 uniform bool classified_beaches;
+uniform bool horizontal_wrap;
 uniform bool show_grid;
 uniform bool show_relief = true;
 uniform bool show_vegetation = true;
@@ -21,6 +22,9 @@ const float ROOT3 = 1.73205080757;
 const vec3 OCEAN = vec3(0.065, 0.19, 0.24);
 const vec3 SHALLOW = vec3(0.19, 0.43, 0.43);
 const vec3 BEACH = vec3(0.73, 0.67, 0.46);
+const ivec2 NEIGHBORS[6] = {
+    ivec2(1, 0), ivec2(0, 1), ivec2(-1, 1), ivec2(-1, 0), ivec2(0, -1), ivec2(1, -1)
+};
 
 void vertex() {
     map_position = VERTEX;
@@ -48,6 +52,9 @@ bool inside(ivec2 offset) {
 
 vec4 sample_terrain(ivec2 hex) {
     ivec2 offset = to_offset(hex);
+    if (horizontal_wrap) {
+        offset.x = (offset.x + map_size.x) % map_size.x;
+    }
     if (!inside(offset)) {
         return vec4(0.0, 0.0, 0.0, 1.0 / 255.0);
     }
@@ -80,9 +87,12 @@ int water_type(vec4 data) {
     return surface_bits(data) & 3;
 }
 
+vec2 hex_center(ivec2 hex) {
+    return vec2(ROOT3 * (float(hex.x) + 0.5 * float(hex.y)), 1.5 * float(hex.y));
+}
+
 vec2 hex_uv(ivec2 hex) {
-    vec2 center = vec2(ROOT3 * (float(hex.x) + 0.5 * float(hex.y)), 1.5 * float(hex.y));
-    return (map_position - center) / vec2(ROOT3, 2.0) + vec2(0.5);
+    return (map_position - hex_center(hex)) / vec2(ROOT3, 2.0) + vec2(0.5);
 }
 
 vec3 ground_color(vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
@@ -151,7 +161,49 @@ vec3 decorate(vec3 color, vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
     return color;
 }
 
-vec3 terrain_color(vec2 axial, vec2 tile_dx, vec2 tile_dy) {
+float noise_sample(vec2 cell, float period) {
+    if (horizontal_wrap) {
+        cell.x = mod(cell.x, period);
+    }
+    vec2 p = fract(cell * vec2(0.3183099, 0.3678794));
+    p += dot(p, p.yx + 19.19);
+    return fract(p.x * p.y);
+}
+
+float coast_noise(vec2 position, float frequency) {
+    float span = float(map_size.x) * ROOT3;
+    float period = round(span * frequency);
+    vec2 p = position * vec2(horizontal_wrap ? period / span : frequency, frequency);
+    vec2 cell = floor(p);
+    vec2 f = smoothstep(vec2(0.0), vec2(1.0), fract(p));
+    return mix(
+        mix(noise_sample(cell, period), noise_sample(cell + vec2(1.0, 0.0), period), f.x),
+        mix(noise_sample(cell + vec2(0.0, 1.0), period), noise_sample(cell + vec2(1.0), period), f.x),
+        f.y) * 2.0 - 1.0;
+}
+
+float shore_weight(ivec2 hex) {
+    vec2 delta = map_position - hex_center(hex);
+    // The kernel reaches zero before any center beyond the six neighbors can contribute.
+    float weight = max(1.0 - dot(delta, delta) * 0.25, 0.0);
+    return weight * weight * weight;
+}
+
+float shore_coverage(ivec2 closest, int current_type) {
+    float total = shore_weight(closest);
+    float land = total * float(current_type == 0);
+    for (int direction = 0; direction < 6; direction++) {
+        ivec2 neighbor = closest + NEIGHBORS[direction];
+        float weight = shore_weight(neighbor);
+        if (weight > 0.0) {
+            total += weight;
+            land += weight * float(water_type(sample_terrain(neighbor)) == 0);
+        }
+    }
+    return land / total;
+}
+
+vec3 terrain_color(vec2 axial, vec4 current, ivec2 current_hex, vec2 tile_dx, vec2 tile_dy) {
     ivec2 cell = ivec2(floor(axial));
     vec2 f = fract(axial);
     bool upper = f.x + f.y > 1.0;
@@ -165,37 +217,75 @@ vec3 terrain_color(vec2 axial, vec2 tile_dx, vec2 tile_dy) {
         ? vec3(f.x + f.y - 1.0, 1.0 - f.y, 1.0 - f.x)
         : vec3(1.0 - f.x - f.y, f.x, f.y);
     vec3 heights = vec3(unpack16(a.rg), unpack16(b.rg), unpack16(c.rg)) - 32768.0;
-    float elevation = dot(weights, heights);
-    vec3 occupancy = vec3(float(water_type(a) == 0), float(water_type(b) == 0), float(water_type(c) == 0));
-    float land_fraction = dot(weights, occupancy);
-    if (stage >= 2 && (occupancy.x != occupancy.y || occupancy.x != occupancy.z)) {
-        vec3 distances = clamp(abs(heights), vec3(1.0), vec3(260.0)) * (2.0 * occupancy - 1.0);
-        float contour = 0.5 + 0.5 * dot(weights, distances) / dot(weights, abs(distances));
-        land_fraction = mix(land_fraction, contour, 0.88);
+    ivec3 types = ivec3(water_type(a), water_type(b), water_type(c));
+    int current_type = water_type(current);
+    vec3 dry_weights = weights * vec3(equal(types, ivec3(0)));
+    vec3 sea_weights = weights * vec3(equal(types, ivec3(1)));
+    float land_fraction = dot(dry_weights, vec3(1.0));
+    float sea_fraction = dot(sea_weights, vec3(1.0));
+    bool shore = current_type <= 1 && land_fraction > 0.0 && sea_fraction > 0.0;
+
+    vec3 water = vec3(0.0);
+    if (current_type != 0) {
+        water = ground_color(current, current_hex, tile_dx, tile_dy);
+        if (current_type == 1) {
+            float depth = dot(sea_weights, heights) / max(sea_fraction, 0.00001);
+            vec3 depth_color = mix(OCEAN, SHALLOW, 0.72 * smoothstep(-2300.0, 0.0, depth));
+            water = mix(water, depth_color, 0.20);
+        }
+        if (!shore) {
+            return water;
+        }
     }
+
     vec3 ids = round(vec3(a.b, b.b, c.b) * 255.0);
-    vec3 sand_ids = 1.0 - step(vec3(0.5), abs(ids - vec3(1.0)));
-    float sand_fraction = dot(weights, sand_ids);
-    vec3 art_a = ground_color(a, hex_a, tile_dx, tile_dy);
-    vec3 art_b = ground_color(b, hex_b, tile_dx, tile_dy);
-    vec3 art_c = ground_color(c, hex_c, tile_dx, tile_dy);
-    vec3 dry_weights = weights * occupancy;
-    vec3 wet_weights = weights * (1.0 - occupancy);
+    bool blend_biomes = stage == 3 && (
+        (ids.x != ids.y && dry_weights.x * dry_weights.y > 0.0) ||
+        (ids.x != ids.z && dry_weights.x * dry_weights.z > 0.0) ||
+        (ids.y != ids.z && dry_weights.y * dry_weights.z > 0.0));
+    vec2 noise = vec2(0.0);
+    if (shore || blend_biomes) {
+        noise = vec2(coast_noise(map_position, 0.49), coast_noise(map_position, 1.81));
+    }
+    float elevation = dot(dry_weights, heights) / max(land_fraction, 0.00001);
+    float sand_fraction = dot(dry_weights, vec3(equal(ids, vec3(1.0)))) / max(land_fraction, 0.00001);
+    vec3 art_a = dry_weights.x > 0.0 ? ground_color(a, hex_a, tile_dx, tile_dy) : vec3(0.0);
+    vec3 art_b = dry_weights.y > 0.0 ? ground_color(b, hex_b, tile_dx, tile_dy) : vec3(0.0);
+    vec3 art_c = dry_weights.z > 0.0 ? ground_color(c, hex_c, tile_dx, tile_dy) : vec3(0.0);
+    if (blend_biomes) {
+        // Work with total weight per biome so a triangle's zero-weight vertex cannot change its edge.
+        vec3 same = vec3(float(ids.x == ids.y), float(ids.x == ids.z), float(ids.y == ids.z));
+        vec3 biome_weights = dry_weights + vec3(
+            dot(dry_weights.yz, same.xy),
+            dot(dry_weights.xz, same.xz),
+            dot(dry_weights.xy, same.yz));
+        vec3 share = biome_weights / land_fraction;
+        vec3 phase = ids * 2.39996;
+        vec3 bias = noise.x * sin(phase) + noise.y * cos(phase) * 0.48;
+        dry_weights *= (1.0 + bias * 0.34) / (0.45 + 0.55 * share);
+    }
     vec3 land = (art_a * dry_weights.x + art_b * dry_weights.y + art_c * dry_weights.z)
         / max(dot(dry_weights, vec3(1.0)), 0.00001);
     land *= mix(0.96, 1.07, smoothstep(0.0, 4200.0, elevation));
-    vec3 water = (art_a * wet_weights.x + art_b * wet_weights.y + art_c * wet_weights.z)
-        / max(dot(wet_weights, vec3(1.0)), 0.00001);
-    vec3 depth_color = mix(OCEAN, SHALLOW, 0.55 * smoothstep(-2300.0, 0.0, elevation) + 0.45 * land_fraction);
-    water = mix(water, depth_color, 0.20);
+    if (!shore) {
+        return land;
+    }
+
+    // The shore is a narrow strip with the neighboring land's color. The ocean center stays wet.
     float sand = classified_beaches
-        ? smoothstep(0.08, 0.46, sand_fraction)
+        ? smoothstep(0.10, 0.85, sand_fraction)
         : 0.65 * (1.0 - smoothstep(15.0, 170.0, elevation));
-    vec3 rock = mix(land, vec3(0.43, 0.42, 0.37), 0.48);
-    vec3 shore = mix(rock, BEACH, sand);
-    float shore_width = mix(0.085, 0.27, sand);
-    vec3 coast = mix(shore, land, smoothstep(0.50 + shore_width * 0.30, 0.50 + shore_width, land_fraction));
-    return mix(water, coast, smoothstep(0.45, 0.56, land_fraction));
+    vec3 wet_rock = land * vec3(0.54, 0.69, 0.73);
+    vec3 wet_sand = mix(land, BEACH, 0.28) * vec3(0.85, 0.83, 0.72);
+    float contour = shore_coverage(current_hex, current_type) + 0.067 * noise.x + 0.034 * noise.y;
+    vec3 coast = mix(mix(wet_rock, wet_sand, sand), land, smoothstep(0.61, 0.92, contour));
+    if (current_type == 0) {
+        return mix(land, coast, min(sea_fraction * 9.0, 1.0));
+    }
+    float antialias = clamp(max(length(tile_dx), length(tile_dy)) * 0.55, 0.004, 0.10);
+    float strip = smoothstep(0.235 - antialias, 0.235 + antialias, contour);
+    float surf = 1.0 - smoothstep(0.01, 0.065, abs(contour - 0.235));
+    return mix(water, mix(coast, mix(SHALLOW, vec3(0.63, 0.76, 0.74), 0.52), surf * 0.63), strip);
 }
 
 void fragment() {
@@ -213,7 +303,8 @@ void fragment() {
         if (stage == 0 && layer != 5) {
             color = vec3(0.095, 0.15, 0.17);
         } else if (layer == 0) {
-            color = decorate(terrain_color(axial, tile_dx, tile_dy), sample_terrain(hex), hex, tile_dx, tile_dy);
+            vec4 data = sample_terrain(hex);
+            color = decorate(terrain_color(axial, data, hex, tile_dx, tile_dy), data, hex, tile_dx, tile_dy);
         } else if (layer == 1 || layer == 4) {
             vec4 data = sample_terrain(hex);
             float elevation = unpack16(data.rg) - 32768.0;
@@ -229,8 +320,7 @@ void fragment() {
             color = vec3(0.14, 0.22, 0.24);
         }
 
-        vec2 center = vec2(ROOT3 * (float(hex.x) + 0.5 * float(hex.y)), 1.5 * float(hex.y));
-        vec2 local = abs(map_position - center);
+        vec2 local = abs(map_position - hex_center(hex));
         float edge_distance = ROOT3 * 0.5 - max(local.x, 0.5 * local.x + ROOT3 * 0.5 * local.y);
         float units_per_pixel = max(length(map_dx), length(map_dy));
         float edge = 1.0 - smoothstep(0.0, units_per_pixel * 1.3, edge_distance);

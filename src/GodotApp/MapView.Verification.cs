@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -34,6 +35,7 @@ public partial class MapView
 
             WorldData original = WorldGenerator.Create(manifest);
             VerifyBiomes(original);
+            VerifyRegionalGeneration();
             for (int row = 0; row < original.Height; row++)
             for (int col = 0; col < original.Width; col++)
             {
@@ -96,11 +98,21 @@ public partial class MapView
 
             InstallWorld(loaded);
             RefreshInterface();
+            int coast = Array.FindIndex(loaded.Flags, flags => (flags & WorldData.CoastFlag) != 0);
+            Hex coastHex = HexGrid.FromOffset(coast % loaded.Width, coast / loaded.Width);
+            int coastalOcean = Enumerable.Range(0, 6)
+                .Select(direction => HexGrid.NeighborIndex(coastHex, direction, loaded.Width, loaded.Height, false))
+                .First(index => index >= 0 && loaded.Water[index] == WaterType.Ocean);
+            SelectHex(new Vector2I(coastalOcean % loaded.Width, coastalOcean / loaded.Width));
+            Require(_inspection.Text.Contains("Oceano costeiro"), "A faixa costeira deve continuar identificada como oceano.");
             SelectHex(new Vector2I(513, 257));
             SetLayer(3);
             Require(_selected == new Vector2I(513, 257) && _inspection.Text.Contains("513, 257") && _layer == 3, "Inspector inválido.");
             Require(seconds < 5, "O round-trip ultrapassou 5 segundos.");
-            await CreateWorldAsync(small, fillingBlank: false);
+            Task creation = CreateWorldAsync(small, fillingBlank: false);
+            Require(_generationStatus.Visible && !_footer.Visible, "A criação deve exibir a barra de progresso.");
+            await creation;
+            Require(!_generationStatus.Visible && _footer.Visible, "A geração deve devolver o rodapé ao concluir.");
             Require(_world?.Width == small.Width && _dirty && _currentPath is null, "A criação não ativou o novo mapa.");
             await SaveWorldAsync(path);
             Require(!_dirty && _currentPath == path && File.Exists(_preferencesPath), "Salvar não atualizou o mapa recente.");
@@ -108,7 +120,7 @@ public partial class MapView
             await OpenWorldAsync(path);
             Require(_world?.Manifest.Generation.Algorithm == TerrainAlgorithm.LandmassCenters && _world.Width == small.Width
                 && _currentPath == path && !_dirty, "Abrir não restaurou o mapa salvo.");
-            GD.Print($"M1 smoke test passed. 524288 hexes, save/load {seconds:F3} s; atomic overwrite and both algorithms verified.");
+            GD.Print($"M2 smoke test passed. 524288 hexes, save/load {seconds:F3} s; step progress and regional seams verified.");
             GetTree().Quit();
         }
         catch (Exception error)
@@ -252,6 +264,108 @@ public partial class MapView
             bestScore = score;
         }
         return best;
+    }
+
+    private static void VerifyRegionalGeneration()
+    {
+        WorldManifest manifest = TestManifest(193, 223, TerrainAlgorithm.Fractal);
+        var reports = new List<GenerationProgress>();
+        WorldData reference = WorldGenerator.Create(manifest, reports.Add);
+        GenerationStep[] steps = Enum.GetValues<GenerationStep>();
+        Require(reports.Select(report => report.Step).Distinct().SequenceEqual(steps), "Ordem de geração incorreta.");
+        foreach (GenerationStep step in steps)
+        {
+            int[] percentages = reports.Where(report => report.Step == step).Select(report => report.Percent).ToArray();
+            Require(percentages[0] == 0 && percentages[^1] == 100 && percentages.SequenceEqual(percentages.Order()),
+                $"Percentual inválido na etapa {step}.");
+        }
+
+        Require(reference.Chunks.Columns == 7 && reference.Chunks.Rows == 7 &&
+            reference.Chunks.GetChunk(reference.Chunks.Count - 1) == new WorldRegion(192, 192, 1, 31),
+            "A grade não inclui os chunks parciais.");
+        var world = WorldGenerator.Create(manifest);
+        // Verify the first regional operation on a world without cached sea-level calibration.
+        world.GeneratedSeaLevel = float.NaN;
+        int transitions = VerifyRegion(reference, world, new WorldRegion(29, 25, 75, 79));
+        transitions += VerifyRegion(reference, world, reference.Chunks.GetChunk(10));
+        transitions += VerifyRegion(reference, world, reference.Chunks.GetChunk(reference.Chunks.Count - 1));
+        Require(transitions > 0, "As regiões de teste precisam cruzar transições entre biomas terrestres.");
+
+        WorldManifest wrapped = manifest with { HorizontalWrap = true, GeneratorVersion = 4,
+            Generation = manifest.Generation with { Algorithm = TerrainAlgorithm.LandmassCenters } };
+        WorldData wrapReference = WorldGenerator.Create(wrapped);
+        WorldData wrapWorld = WorldGenerator.Create(wrapped);
+        VerifyRegion(wrapReference, wrapWorld, new WorldRegion(0, 0, 14, 65));
+        VerifyRegion(wrapReference, wrapWorld, new WorldRegion(185, 158, 8, 65));
+
+        foreach (GenerationStage stage in new[] { GenerationStage.Land, GenerationStage.Relief })
+        {
+            var partial = manifest with { Generation = manifest.Generation with { Stage = stage } };
+            VerifyRegion(WorldGenerator.Create(partial), WorldGenerator.Create(partial), new WorldRegion(28, 27, 37, 34));
+        }
+    }
+
+    private static int VerifyRegion(WorldData reference, WorldData world, WorldRegion region)
+    {
+        bool Inside(int col, int row) => col >= region.Column && col < region.Column + region.Width
+            && row >= region.Row && row < region.Row + region.Height;
+        GenerationStage stage = world.Manifest.Generation.Stage;
+        int outside = region.Column == 0 ? world.Width - 1 : 0;
+        world.Elevation[outside] = short.MaxValue;
+        for (int row = region.Row; row < region.Row + region.Height; row++)
+        for (int col = region.Column; col < region.Column + region.Width; col++)
+        {
+            int index = row * world.Width + col;
+            world.Elevation[index] = short.MinValue;
+            world.Water[index] = WaterType.Lake;
+            if (stage >= GenerationStage.Relief)
+                world.Relief[index] = (ReliefType)byte.MaxValue;
+            if (stage == GenerationStage.Terrain)
+            {
+                world.Biomes[index] = (BiomeType)byte.MaxValue;
+                world.Temperature[index] = short.MinValue;
+                world.Rainfall[index] = ushort.MaxValue;
+            }
+            world.Flags[index] ^= WorldData.CoastFlag;
+            world.Flags[index] |= 2;
+            world.RoadEdges[index] = 3;
+        }
+
+        WorldGenerator.RegenerateRegion(world, region);
+        int transitions = 0;
+        for (int index = 0; index < world.Count; index++)
+        {
+            int col = index % world.Width;
+            int row = index / world.Width;
+            bool selected = Inside(col, row);
+            Require(world.Elevation[index] == (index == outside ? short.MaxValue : reference.Elevation[index])
+                && world.Water[index] == reference.Water[index]
+                && world.Relief[index] == reference.Relief[index]
+                && world.Biomes[index] == reference.Biomes[index]
+                && world.Temperature[index] == reference.Temperature[index]
+                && world.Rainfall[index] == reference.Rainfall[index]
+                && world.Flags[index] == (selected ? reference.Flags[index] | 2 : reference.Flags[index])
+                && world.RoadEdges[index] == (selected ? 3 : 0), $"Emenda ou escrita indevida em ({col}, {row}).");
+
+            if (selected && world.Water[index] == WaterType.None)
+            {
+                Hex hex = HexGrid.FromOffset(col, row);
+                for (int direction = 0; direction < 6; direction++)
+                {
+                    int neighbor = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, world.Manifest.HorizontalWrap);
+                    if (neighbor >= 0 && !Inside(neighbor % world.Width, neighbor / world.Width) &&
+                        world.Water[neighbor] == WaterType.None && world.Biomes[index] != world.Biomes[neighbor])
+                        transitions++;
+                }
+            }
+            if (selected)
+            {
+                world.Flags[index] = reference.Flags[index];
+                world.RoadEdges[index] = 0;
+            }
+        }
+        world.Elevation[outside] = reference.Elevation[outside];
+        return transitions;
     }
 
     private static void VerifyBiomes(WorldData world)
