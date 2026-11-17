@@ -1,0 +1,19 @@
+config_version=5
+
+[application]
+config/name="World Simulation RPG"
+run/main_scene="res://src/GodotApp/Map.tscn"
+config/features=PackedStringArray("4.7", "C#", "GL Compatibility")
+
+[display]
+window/size/viewport_width=1280
+window/size/viewport_height=800
+
+[dotnet]
+project/assembly_name="Mapmaker"
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/default_filters/use_nearest_mipmap_filter=false
+environment/defaults/default_clear_color=Color(0.038, 0.068, 0.083, 1)

@@ -1,0 +1,6 @@
+.godot/
+.vs/
+bin/
+obj/
+/GodotSharp/
+/Godot_*.exe
