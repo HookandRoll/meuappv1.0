@@ -1,24 +1,33 @@
 # World Simulation RPG
 
-Protótipo de mapa para RPG. O marco M0 testa a renderização de 524.288 hexes com Godot 4 .NET. O mapa de demonstração é determinístico e serve para exercitar o renderer.
+Protótipo de mapa para RPG feito com Godot 4 .NET.
 
 ## Abrir o protótipo
 
 1. Instale o Godot **4.7.2 .NET** e um SDK .NET compatível com o alvo `net8.0`.
 2. Abra `project.godot` no editor ou importe a pasta pelo gerenciador de projetos.
-3. Pressione **F5**. Use a roda do mouse para aproximar, arraste com o botão direito ou do meio para mover e clique para inspecionar um hex.
+3. Pressione **F5**. O aplicativo abre sem mapa. Use **Mapa → Novo mapa** para criar um mundo ou **Mapa → Abrir mapa** para carregar um arquivo `.world`.
 
 O VS Code pode abrir a pasta inteira. Também é possível compilar com `dotnet build Mapmaker.csproj`.
 
-## Verificar o M0
+## Criar e salvar mapas
+
+- Os presets vão de **128 × 64** a **4096 × 2048**. O maior contém 8.388.608 hexes.
+- No formulário, escolha entre grade vazia, terra e água, relevo ou terreno completo com clima e biomas. Uma grade vazia pode ser preenchida depois em **Mapa → Gerar terreno**.
+- Os algoritmos são **Ruído fractal (fBm)** e **Centros de massas de terra**. A quantidade de continentes indica o número de massas iniciais. Elas podem se unir ou se fragmentar de acordo com a seed, a proporção de terra e a irregularidade das costas.
+- Use a roda do mouse para aproximar, arraste com o botão direito ou do meio para mover e clique para inspecionar um hex.
+- **Salvar** (`Ctrl+S`), **Salvar como** (`Ctrl+Shift+S`) e **Abrir último mapa** ficam no menu **Mapa**. O menu **Editar** já mostra os comandos previstos para a próxima fase.
+
+## Verificar a build
 
 Após compilar, use o executável de console do Godot .NET. Substitua `godot` pelo caminho do executável se ele estiver fora do PATH.
 
 ```text
 godot --headless --path . -- --smoke-test
 godot --path . -- --benchmark
+godot --path . -- --benchmark-large
 ```
 
-O primeiro comando verifica a conversão e a seleção pelos centros de todos os hexes. O segundo abre uma janela, captura `.godot/benchmark-m0.png` e mede pan/zoom, troca de layer por uniform e atualização integral das duas texturas de dados, totalizando 4 MiB no preset maior. A latência engloba o tempo até o sinal de conclusão do frame do Godot. O benchmark retorna código 2 quando a média de FPS fica abaixo de 30 ou a troca de layer chega a 100 ms.
+O teste verifica o estado inicial, a seleção de hexes, as arestas compartilhadas, o wrap, a geração e o ciclo de salvar e abrir do preset 1024 × 512. Os benchmarks medem o carregamento inicial do renderer, pan/zoom, troca de camada e atualização integral das texturas em 1024 × 512 e 4096 × 2048. As imagens são gravadas em `.godot/`. As medições de latência vão até o sinal de conclusão do frame do Godot.
 
-O núcleo em `src/Core` usa C# puro. `src/GodotApp` cuida das texturas, do shader, dos lotes de relevo e da interface. A especificação na raiz lista os marcos seguintes.
+O núcleo em `src/Core` usa C# puro. `src/GodotApp` prepara as texturas e a interface, e o shader desenha terreno, relevo e vegetação com a arte de `tiles`, `relief` e `vegetation`. O `.world` é um ZIP versionado com a configuração de geração, os dados densos e as entidades esparsas. O arquivo é montado em um temporário antes de substituir o save anterior. A especificação na raiz lista os marcos seguintes.
