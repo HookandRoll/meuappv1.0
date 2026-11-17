@@ -7,17 +7,19 @@ internal sealed class MapArtwork : IDisposable
 {
     private readonly Texture2DArray _ground = Load("tiles", 512, false,
         "beach", "grasslands", "temperate_forest", "rainforest", "savanna", "steppe", "desert",
-        "taiga", "tundra", "alpine", "ocean", "lake", "wetland");
+        "taiga", "tundra", "alpine", "shallow_ocean", "lake", "wetland", "deep_ocean");
     private readonly Texture2DArray _relief = Load("relief", 256, true,
         "rolling_hills", "hills", "mountains", "peaks", "snowy_peaks");
     private readonly Texture2DArray _vegetation = Load("vegetation", 128, true,
         "temperate_trees", "rainforest_canopy", "taiga_pines", "savanna_trees", "desert_scrub", "wetland_reeds");
+    private readonly Texture2DArray _details = Load("Icons", 128, true, MapDetailIcons.FileNames);
 
     public void Bind(ShaderMaterial material)
     {
         material.SetShaderParameter("ground_art", _ground);
         material.SetShaderParameter("relief_art", _relief);
         material.SetShaderParameter("vegetation_art", _vegetation);
+        material.SetShaderParameter("detail_art", _details);
     }
 
     public void Dispose()
@@ -25,6 +27,7 @@ internal sealed class MapArtwork : IDisposable
         _ground.Dispose();
         _relief.Dispose();
         _vegetation.Dispose();
+        _details.Dispose();
     }
 
     private static Texture2DArray Load(string folder, int size, bool overlay, params string[] names)

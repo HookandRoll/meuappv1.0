@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace Mapmaker.Core;
 
-public enum TerrainAlgorithm { Fractal, LandmassCenters }
+public enum TerrainAlgorithm { Fractal, LandmassCenters, ContinentalSculpt }
 public enum GenerationStage { Blank, Land, Relief, Terrain }
 public enum WaterType : byte { None, Ocean, Lake, Wetland }
 public enum ReliefType : byte { Flat, Rolling, Hills, Mountains, Peak }
@@ -84,6 +84,8 @@ public sealed class WorldData
         if (manifest.Generation is not { Continents: >= 1 and <= 12, LandPercent: >= 10 and <= 65, CoastDetail: >= 0 and <= 100 } options
             || !Enum.IsDefined(options.Algorithm) || !Enum.IsDefined(options.Stage))
             throw new ArgumentException("Configuração de geração inválida.");
+        if (options.Algorithm == TerrainAlgorithm.ContinentalSculpt && manifest.GeneratorVersion < 6)
+            throw new ArgumentException("A escultura continental requer a versão 6 do gerador ou posterior.");
     }
 
     public void RebuildCoast()

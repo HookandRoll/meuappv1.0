@@ -41,7 +41,8 @@ public partial class MapView : Node2D
         else if (Array.IndexOf(args, "--benchmark") >= 0 || Array.IndexOf(args, "--benchmark-large") >= 0)
         {
             bool large = Array.IndexOf(args, "--benchmark-large") >= 0;
-            Callable.From(() => RunBenchmark(large)).CallDeferred();
+            bool sculpt = Array.IndexOf(args, "--continental-sculpt") >= 0;
+            Callable.From(() => RunBenchmark(large, sculpt)).CallDeferred();
         }
     }
 
@@ -116,10 +117,10 @@ public partial class MapView : Node2D
         _textures = nextTextures;
         _material.SetShaderParameter("terrain_data", nextTextures is null ? default : Variant.From(nextTextures.Terrain));
         _material.SetShaderParameter("climate_data", nextTextures is null ? default : Variant.From(nextTextures.Climate));
+        _material.SetShaderParameter("detail_data", nextTextures is null ? default : Variant.From(nextTextures.Details));
         _material.SetShaderParameter("map_size", new Vector2I(world.Width, world.Height));
         _material.SetShaderParameter("stage", (int)stage);
         _material.SetShaderParameter("horizontal_wrap", world.Manifest.HorizontalWrap);
-        _material.SetShaderParameter("classified_beaches", stage == GenerationStage.Terrain && world.Manifest.GeneratorVersion >= 3);
         previousTextures?.Dispose();
 
         Vector2 origin = new(-HexGrid.Root3 * 0.5f, -1f);

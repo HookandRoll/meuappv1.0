@@ -35,7 +35,11 @@ public partial class MapView
 
             WorldData original = WorldGenerator.Create(manifest);
             VerifyBiomes(original);
+            VerifyDetailIcons(original);
             VerifyRegionalGeneration();
+            VerifyShorelineFinish();
+            VerifyShallowInlets();
+            VerifyBiomeRibbonFinish();
             for (int row = 0; row < original.Height; row++)
             for (int col = 0; col < original.Width; col++)
             {
@@ -120,7 +124,8 @@ public partial class MapView
             await OpenWorldAsync(path);
             Require(_world?.Manifest.Generation.Algorithm == TerrainAlgorithm.LandmassCenters && _world.Width == small.Width
                 && _currentPath == path && !_dirty, "Abrir não restaurou o mapa salvo.");
-            GD.Print($"M2 smoke test passed. 524288 hexes, save/load {seconds:F3} s; step progress and regional seams verified.");
+            VerifyContinentalSculpture(path);
+            GD.Print($"Smoke test passed. 524288 hexes, save/load {seconds:F3} s; regional seams and continental sculpture verified.");
             GetTree().Quit();
         }
         catch (Exception error)
@@ -135,7 +140,7 @@ public partial class MapView
         }
     }
 
-    private async void RunBenchmark(bool large)
+    private async void RunBenchmark(bool large, bool sculpt)
     {
         try
         {
@@ -150,16 +155,59 @@ public partial class MapView
 
             int width = large ? 4096 : 1024;
             var timer = Stopwatch.StartNew();
-            var world = await Task.Run(() => WorldGenerator.Create(TestManifest(width, width / 2, TerrainAlgorithm.Fractal)));
-            InstallWorld(world);
+            TerrainAlgorithm algorithm = sculpt ? TerrainAlgorithm.ContinentalSculpt : TerrainAlgorithm.Fractal;
+            var world = await Task.Run(() => WorldGenerator.Create(TestManifest(width, width / 2, algorithm)));
+            int shared = -1;
+            if (sculpt && !large)
+            {
+                GlobalDataTextures.Buffers buffers = GlobalDataTextures.BuildBuffers(world);
+                shared = FindSharedDetail(buffers);
+                InstallWorld(world, buffers);
+            }
+            else
+            {
+                InstallWorld(world);
+            }
             RefreshInterface();
             await NextDraw();
             double setup = timer.Elapsed.TotalSeconds;
             for (int i = 0; i < 30; i++)
                 await NextDraw();
-            Screenshot(large ? "benchmark-large.png" : "benchmark-m0.png");
-            if (!large)
+            if (sculpt)
             {
+                Screenshot(large ? "benchmark-sculpt-large.png" : "benchmark-sculpt.png");
+                SetLayer(1);
+                _layerSelect.Select(1);
+                await NextDraw();
+                Screenshot(large ? "benchmark-sculpt-elevation-large.png" : "benchmark-sculpt-elevation.png");
+                SetLayer(0);
+                _layerSelect.Select(0);
+                if (!large)
+                {
+                    ShowDetail(FindDetailCenter(world), 24);
+                    await NextDraw();
+                    Screenshot("benchmark-sculpt-icons.png");
+                    if (shared >= 0)
+                    {
+                        var hex = new Vector2I(shared % world.Width, shared / world.Width);
+                        ShowDetail(hex, 42);
+                        SelectHex(hex);
+                        await NextDraw();
+                        Screenshot("benchmark-sculpt-shared-icons.png");
+                        SelectHex(new Vector2I(-1, -1));
+                    }
+                    int shore = Array.IndexOf(world.Biomes, BiomeType.Beach, world.Count * 2 / 5);
+                    if (shore >= 0)
+                    {
+                        ShowDetail(new Vector2I(shore % world.Width, shore / world.Width), 18);
+                        await NextDraw();
+                        Screenshot("benchmark-sculpt-shore.png");
+                    }
+                }
+            }
+            else if (!large)
+            {
+                Screenshot("benchmark-m0.png");
                 Vector2I detail = FindDetailCenter(world);
                 ShowDetail(detail, 8);
                 await NextDraw();
@@ -175,6 +223,10 @@ public partial class MapView
                     await NextDraw();
                     Screenshot("benchmark-coast.png");
                 }
+            }
+            else
+            {
+                Screenshot("benchmark-large.png");
             }
 
             const int frameCount = 240;
@@ -305,6 +357,188 @@ public partial class MapView
         }
     }
 
+    private static void VerifyContinentalSculpture(string path)
+    {
+        WorldManifest manifest = TestManifest(512, 256, TerrainAlgorithm.ContinentalSculpt);
+        var reports = new List<GenerationProgress>();
+        WorldData reference = WorldGenerator.Create(manifest, reports.Add);
+        int target = (int)((long)reference.Count * manifest.Generation.LandPercent / 100);
+        int actual = reference.Water.Count(type => type == WaterType.None);
+        Require(Math.Abs(actual - target) <= reference.Count / 500, "A escultura não atingiu a área de terra alvo.");
+        Require(reports.First() == new GenerationProgress(GenerationStep.Land, 0)
+            && reports.Last() == new GenerationProgress(GenerationStep.Biomes, 100), "Progresso incompleto na escultura.");
+        var landOnly = manifest with { Generation = manifest.Generation with { Stage = GenerationStage.Land } };
+        Require(reference.Water.SequenceEqual(WorldGenerator.Create(landOnly).Water),
+            "A máscara de terra depende da etapa de geração solicitada.");
+
+        Require(CountCoastalTips(reference) is >= 8 and <= 12,
+            "A costa da seed de teste deve manter entre 8 e 12 pontas de um hex.");
+        foreach (int seed in new[] { 2, 9917 })
+        {
+            int tips = CountCoastalTips(WorldGenerator.Create(landOnly with { Seed = seed }));
+            Require(tips is >= 8 and <= 12, $"A costa da seed {seed} tem {tips} pontas de um hex.");
+        }
+
+        Require(HasConnectedFeature(reference, i => reference.Relief[i] >= ReliefType.Mountains, 250),
+            "O mapa de teste precisa conter uma cadeia de montanhas contínua.");
+        // Esta seed forma um estreito com fundo raso entre duas massas continentais.
+        Require(HasConnectedFeature(reference, i => reference.Water[i] == WaterType.Ocean &&
+            reference.Elevation[i] == WorldGenerator.SculptedStraitDepth, 80),
+            "A calibração do nível do mar precisa manter o canal contínuo.");
+
+        WorldManifest saved = WorldFile.Save(path, reference, null);
+        WorldData loaded = WorldFile.Load(path);
+        Require(loaded.Manifest == saved, "O manifesto perdeu o algoritmo de escultura.");
+        VerifyRegion(reference, loaded, new WorldRegion(119, 59, 137, 134));
+
+        WorldManifest wrapped = TestManifest(193, 95, TerrainAlgorithm.ContinentalSculpt) with { HorizontalWrap = true };
+        WorldData wrappedReference = WorldGenerator.Create(wrapped);
+        WorldData regenerated = WorldGenerator.Create(wrapped);
+        VerifyRegion(wrappedReference, regenerated, new WorldRegion(0, 29, 40, 49));
+        VerifyRegion(wrappedReference, regenerated, new WorldRegion(183, 30, 10, 65));
+    }
+
+    private static void VerifyShorelineFinish()
+    {
+        const int size = 32;
+        int Cell(int column, int row) => row * size + column;
+        var pockets = new float[size * size];
+        Array.Fill(pockets, 0.3f);
+        pockets[Cell(5, 5)] = -0.02f;
+        pockets[Cell(6, 5)] = -0.03f;
+        pockets[Cell(15, 8)] = -0.20f;
+        pockets[Cell(16, 8)] = -0.01f;
+        pockets[Cell(18, 18)] = float.NegativeInfinity;
+        pockets[Cell(19, 18)] = -0.01f;
+        for (int row = 0; row < 3; row++)
+            pockets[Cell(24, row)] = -0.01f;
+
+        WorldGenerator.FinishShoreline(pockets, size, size, false, 0f);
+        Require(pockets[Cell(5, 5)] > 0 && pockets[Cell(6, 5)] > 0, "A poça rasa isolada deve fechar.");
+        Require(pockets[Cell(15, 8)] < 0 && pockets[Cell(16, 8)] < 0 &&
+            float.IsNegativeInfinity(pockets[Cell(18, 18)]) && pockets[Cell(19, 18)] < 0 && pockets[Cell(24, 2)] < 0,
+            "Água profunda, canal protegido ou margem aberta foram preenchidos.");
+
+        var coast = new float[size * size];
+        Array.Fill(coast, -0.3f);
+        for (int row = 8; row <= 16; row++)
+        for (int column = 18; column <= 25; column++)
+            coast[Cell(column, row)] = 0.3f;
+        for (int column = 13; column <= 17; column++)
+            coast[Cell(column, 12)] = 0.04f;
+        coast[Cell(7, 6)] = 0.03f;
+        coast[Cell(8, 6)] = 0.04f;
+        for (int column = 8; column <= 19; column++)
+        {
+            coast[Cell(column, 22)] = 0.04f;
+            coast[Cell(column, 23)] = 0.05f;
+        }
+        for (int row = 26; row <= 28; row++)
+        for (int column = 8; column <= 12; column++)
+            coast[Cell(column, row)] = 0.04f;
+
+        WorldGenerator.FinishShoreline(coast, size, size, false, 0f);
+        Require(coast[Cell(13, 12)] < 0 && coast[Cell(14, 12)] < 0 && coast[Cell(17, 12)] > 0,
+            "O esporão deve encurtar preservando a base.");
+        Require(coast[Cell(7, 6)] > 0 && coast[Cell(8, 6)] > 0 &&
+            coast[Cell(18, 12)] == 0.3f, "A ilhota e a costa larga devem ser preservadas.");
+        Require(coast[Cell(8, 22)] < 0 && coast[Cell(19, 23)] < 0 && coast[Cell(10, 27)] > 0,
+            "A fita rasa deve desaparecer e a ilha compacta deve ser preservada.");
+    }
+
+    private static void VerifyShallowInlets()
+    {
+        const int size = 40;
+        int Cell(int column, int row) => row * size + column;
+        var coast = new float[size * size];
+        Array.Fill(coast, 0.26f);
+        for (int row = 0; row < size; row++)
+        for (int col = 20; col < size; col++)
+            coast[Cell(col, row)] = -0.3f;
+        for (int col = 10; col < 20; col++)
+        {
+            coast[Cell(col, 5)] = -0.03f;
+            coast[Cell(col, 12)] = -0.04f;
+            coast[Cell(col, 13)] = -0.04f;
+            coast[Cell(col, 20)] = -0.03f;
+            coast[Cell(col, 25)] = float.NegativeInfinity;
+        }
+        for (int col = 0; col < 20; col++)
+            coast[Cell(col, 30)] = -0.03f;
+        coast[Cell(10, 20)] = -0.2f;
+
+        WorldGenerator.RoundShallowInlets(coast, size, size, false, 0f);
+        Require(coast[Cell(10, 5)] > 0f && coast[Cell(11, 5)] > 0f && coast[Cell(12, 5)] < 0f,
+            "A reentrância rasa deve encurtar a partir do fundo.");
+        Require(coast[Cell(10, 12)] > 0f && coast[Cell(10, 13)] > 0f && coast[Cell(17, 13)] < 0f,
+            "A reentrância de dois hexes precisa manter a boca aberta.");
+        Require(coast[Cell(10, 20)] < 0f && coast[Cell(11, 20)] < 0f &&
+            float.IsNegativeInfinity(coast[Cell(10, 25)]) && coast[Cell(9, 30)] < 0f && coast[Cell(20, 5)] < 0f,
+            "Água funda, canais protegidos, canais abertos e o mar devem permanecer submersos.");
+    }
+
+    private static void VerifyBiomeRibbonFinish()
+    {
+        const BiomeType forest = BiomeType.TemperateForest;
+        const BiomeType field = BiomeType.Grassland;
+        Require(WorldGenerator.FindBiomeRibbonReplacement(forest, [forest, field, field, forest, field, field],
+            out int middle) == field && middle < 0, "Uma faixa diagonal deve ceder ao bioma dos dois lados.");
+        Require(WorldGenerator.FindBiomeRibbonReplacement(forest, [forest, field, field, field, field, field],
+            out int end) == field && end == 0, "A ponta precisa verificar a continuidade da faixa.");
+        Require(WorldGenerator.FindBiomeRibbonReplacement(forest, [forest, forest, field, field, field, field],
+            out _) == BiomeType.None, "Uma borda curva de floresta deve ser preservada.");
+    }
+
+    private static int CountCoastalTips(WorldData world)
+    {
+        int tips = 0;
+        for (int i = 0; i < world.Count; i++)
+        {
+            if ((world.Flags[i] & WorldData.CoastFlag) == 0)
+                continue;
+            Hex hex = HexGrid.FromOffset(i % world.Width, i / world.Width);
+            int dryNeighbors = 0;
+            for (int direction = 0; direction < 6; direction++)
+            {
+                int neighbor = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, world.Manifest.HorizontalWrap);
+                if (neighbor >= 0 && world.Water[neighbor] == WaterType.None)
+                    dryNeighbors++;
+            }
+            if (dryNeighbors <= 1)
+                tips++;
+        }
+        return tips;
+    }
+
+    private static bool HasConnectedFeature(WorldData world, Func<int, bool> contains, int minimum)
+    {
+        var visited = new bool[world.Count];
+        var frontier = new Queue<int>();
+        for (int start = 0; start < world.Count; start++)
+        {
+            if (visited[start] || !contains(start))
+                continue;
+            visited[start] = true;
+            frontier.Enqueue(start);
+            int length = 0;
+            while (frontier.TryDequeue(out int index))
+            {
+                if (++length >= minimum)
+                    return true;
+                Hex hex = HexGrid.FromOffset(index % world.Width, index / world.Width);
+                for (int direction = 0; direction < 6; direction++)
+                {
+                    int neighbor = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, world.Manifest.HorizontalWrap);
+                    if (neighbor < 0 || visited[neighbor] || !contains(neighbor))
+                        continue;
+                    visited[neighbor] = true;
+                    frontier.Enqueue(neighbor);
+                }
+            }
+        }
+        return false;
+    }
+
     private static int VerifyRegion(WorldData reference, WorldData world, WorldRegion region)
     {
         bool Inside(int col, int row) => col >= region.Column && col < region.Column + region.Width
@@ -366,6 +600,48 @@ public partial class MapView
         }
         world.Elevation[outside] = reference.Elevation[outside];
         return transitions;
+    }
+
+    private static void VerifyDetailIcons(WorldData world)
+    {
+        GlobalDataTextures.Buffers data = GlobalDataTextures.BuildBuffers(world);
+        Require(data.Details.AsSpan().SequenceEqual(MapDetailIcons.Build(world, data.Terrain)),
+            "O posicionamento dos ícones deve reproduzir a seed.");
+        var used = new HashSet<byte>();
+        int primary = 0;
+        int close = 0;
+        for (int i = 0; i < data.Details.Length; i++)
+        {
+            byte packed = data.Details[i];
+            byte icon = (byte)(packed & MapDetailIcons.IconIdMask);
+            if (icon == 0)
+            {
+                Require(packed == 0, "Ícone ausente com estado de zoom.");
+                continue;
+            }
+            Require(icon <= MapDetailIcons.FileNames.Length, "Ícone inválido.");
+            if ((packed & MapDetailIcons.CloseZoomFlag) != 0)
+                close++;
+            else
+            {
+                primary++;
+                Require((data.Terrain[i * 4 + 3] & 0xc0) == 0, "A vista afastada precisa manter o hex livre.");
+            }
+            used.Add(icon);
+        }
+        Require(used.Count >= 16, "O mapa de teste precisa mostrar variedade de ícones.");
+        Require(primary > 0 && close > 0 && FindSharedDetail(data) >= 0,
+            "O zoom deve revelar mais ícones, inclusive em hexes com relevo e vegetação.");
+    }
+
+    private static int FindSharedDetail(GlobalDataTextures.Buffers data)
+    {
+        for (int i = 0; i < data.Details.Length; i++)
+        {
+            if ((data.Details[i] & MapDetailIcons.CloseZoomFlag) != 0 && (data.Terrain[i * 4 + 3] & 0xc0) == 0xc0)
+                return i;
+        }
+        return -1;
     }
 
     private static void VerifyBiomes(WorldData world)

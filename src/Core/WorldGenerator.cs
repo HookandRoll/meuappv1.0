@@ -9,7 +9,8 @@ public readonly record struct GenerationProgress(GenerationStep Step, int Percen
 
 public static partial class WorldGenerator
 {
-    public const int Version = 5;
+    public const int Version = 12;
+    internal const short SculptedStraitDepth = -137;
     private const int HistogramSize = 2048;
     // Two forest growth passes read up to two hexes away each. Cleanup reads one more.
     private const int ForestMargin = 5;
@@ -36,6 +37,10 @@ public static partial class WorldGenerator
 
         int margin = world.Manifest.Generation.Stage == GenerationStage.Terrain
             ? ForestMargin + Math.Max(1, world.Height / 96) : 1;
+        if (world.Manifest.Generation.Stage == GenerationStage.Terrain && RefinesBiomeEdges(world.Manifest))
+            margin++;
+        if (world.Manifest.Generation.Stage == GenerationStage.Terrain && FinishesBiomeRibbons(world.Manifest))
+            margin += 2;
         var area = new GenerationArea(world, ExpandRegion(world, region, margin));
         Generate(world, area, progress);
         area.CopyRegionTo(world, region);
@@ -60,26 +65,36 @@ public static partial class WorldGenerator
     private static void Generate(WorldData world, GenerationArea area, Action<GenerationProgress>? progress)
     {
         WorldManifest manifest = world.Manifest;
-        if (manifest.GeneratorVersion is not (4 or Version))
+        if (manifest.GeneratorVersion is < 4 or > Version)
             throw new ArgumentException($"Versão do gerador não suportada: {manifest.GeneratorVersion}.", nameof(manifest));
 
         GenerationSettings settings = manifest.Generation;
         float aspect = world.Width / (float)world.Height;
-        LandLobe[] lobes = PlaceLandmasses(settings.Continents, manifest.Seed, aspect);
+        bool sculpt = settings.Algorithm == TerrainAlgorithm.ContinentalSculpt;
+        LandLobe[] lobes = sculpt ? Array.Empty<LandLobe>() : PlaceLandmasses(settings.Continents, manifest.Seed, aspect);
         uint seed = unchecked((uint)manifest.Seed);
         float coast = settings.CoastDetail * 0.01f;
         bool fractal = settings.Algorithm == TerrainAlgorithm.Fractal;
         float seaLevel = world.GeneratedSeaLevel;
-        float[]? scores = float.IsNaN(seaLevel) ? new float[world.Count] : null;
+        float[]? scores = !sculpt && float.IsNaN(seaLevel) ? new float[world.Count] : null;
         float SampleScore(int col, int row)
         {
             float x = (col + (row & 1) * 0.5f) / world.Width;
             return LandScore(x, (float)row / world.Height, aspect, lobes, seed, coast, fractal);
         }
-        float ScoreAt(int col, int row) => scores is null ? SampleScore(col, row) : scores[row * world.Width + col];
+        float ScoreAt(int col, int row)
+        {
+            float score = scores is null ? SampleScore(col, row) : scores[row * world.Width + col];
+            return float.IsNegativeInfinity(score) ? seaLevel + SculptedStraitDepth / 2500f : score;
+        }
 
         progress?.Invoke(new(GenerationStep.Land, 0));
-        if (scores is not null)
+        float[]? ridges = null;
+        if (sculpt)
+        {
+            (scores, ridges, seaLevel) = new ContinentalSculpture(manifest).Build(progress);
+        }
+        else if (scores is not null)
         {
             VisitChunks(world.Chunks, (index, col, row) => scores[index] = SampleScore(col, row),
                 progress, GenerationStep.Land, 0, 85);
@@ -110,9 +125,13 @@ public static partial class WorldGenerator
             float plain = 0f;
             short elevation;
             if (area.Water[i] == WaterType.Ocean)
-                elevation = (short)Math.Min(-1, Math.Clamp(altitude * 2500, -6000f, 0f));
+                elevation = sculpt && float.IsNegativeInfinity(scores![row * world.Width + col])
+                    ? SculptedStraitDepth : (short)Math.Min(-1, Math.Clamp(altitude * 2500, -6000f, 0f));
             else
-                (elevation, plain) = LandElevation((float)col / world.Width, (float)row / world.Height, aspect, altitude, seed);
+            {
+                float? ridge = ridges?[row * world.Width + col];
+                (elevation, plain) = LandElevation((float)col / world.Width, (float)row / world.Height, aspect, altitude, seed, ridge);
+            }
 
             area.Elevation[i] = elevation;
             area.Relief[i] = elevation switch
@@ -134,17 +153,19 @@ public static partial class WorldGenerator
             col = area.WorldColumn(col);
             row = area.WorldRow(row);
             float maritime = area.Water[i] == WaterType.Ocean ? 1f
-                : SeaExposure(ScoreAt, seaLevel, world.Width, world.Height, col, row, climateRadius);
+                : SeaExposure(ScoreAt, seaLevel, world.Width, world.Height, col, row, climateRadius, sculpt && manifest.HorizontalWrap);
             (area.Temperature[i], area.Rainfall[i]) = Climate((float)col / world.Width, (float)row / world.Height,
                 aspect, area.Elevation[i], maritime, seed);
         }, progress, GenerationStep.Climate, 0, 100);
 
         progress?.Invoke(new(GenerationStep.Biomes, 0));
         int inlandSteps = Math.Max(1, world.Height / 96);
+        bool refineBiomeEdges = RefinesBiomeEdges(manifest);
         VisitChunks(area.Chunks, (i, col, row) =>
         {
             if (area.Water[i] == WaterType.Ocean)
                 return;
+            short elevation = area.Elevation[i];
             short temperature = area.Temperature[i];
             ushort rainfall = area.Rainfall[i];
             openPlains[i] &= temperature > 45 && rainfall < (temperature >= 225 ? 1450 : 1700);
@@ -154,7 +175,9 @@ public static partial class WorldGenerator
                 area.Biomes[i] = BiomeType.Beach;
                 return;
             }
-            if (manifest.GeneratorVersion == Version)
+            if (refineBiomeEdges)
+                (elevation, temperature, rainfall) = BiomeClimateAt(area, i, col, row);
+            if (manifest.GeneratorVersion >= 5)
             {
                 // Bend climate thresholds locally, while keeping the underlying climate values intact.
                 float x = area.WorldColumn(col) * 32f / world.Height;
@@ -162,9 +185,39 @@ public static partial class WorldGenerator
                 float variation = Noise(x, y, seed ^ 0xB82F1E49u) + 0.35f * Noise(x * 2.1f, y * 2.1f, seed ^ 0x6DD15B57u) - 0.675f;
                 rainfall = (ushort)Math.Max(0, rainfall + (int)(variation * 220f));
             }
-            area.Biomes[i] = ChooseBiome(area.Elevation[i], temperature, rainfall, forests: !openPlains[i]);
+            area.Biomes[i] = ChooseBiome(elevation, temperature, rainfall, forests: !openPlains[i]);
         }, progress, GenerationStep.Biomes, 0, 65);
-        RefineLandBiomes(area, openPlains, progress);
+        bool finishRibbons = FinishesBiomeRibbons(manifest);
+        RefineLandBiomes(area, openPlains, progress, finishRibbons ? 97 : 100);
+        if (finishRibbons)
+            FinishBiomeRibbons(area, openPlains, progress);
+    }
+
+    private static bool RefinesBiomeEdges(WorldManifest manifest) =>
+        manifest.GeneratorVersion >= 8 && manifest.Generation.Algorithm == TerrainAlgorithm.ContinentalSculpt;
+
+    private static bool FinishesBiomeRibbons(WorldManifest manifest) =>
+        manifest.GeneratorVersion >= 11 && manifest.Generation.Algorithm == TerrainAlgorithm.ContinentalSculpt;
+
+    private static (short Elevation, short Temperature, ushort Rainfall) BiomeClimateAt(GenerationArea area, int i, int col, int row)
+    {
+        // Use the nearby land climate for classification. Keep the actual relief and climate in the map.
+        int elevation = area.Elevation[i] * 3;
+        int temperature = area.Temperature[i] * 3;
+        int rainfall = area.Rainfall[i] * 3;
+        int weight = 3;
+        Hex hex = area.WorldHex(col, row);
+        for (int direction = 0; direction < 6; direction++)
+        {
+            int neighbor = area.Neighbor(hex, direction);
+            if (neighbor < 0 || area.Water[neighbor] != WaterType.None)
+                continue;
+            elevation += area.Elevation[neighbor];
+            temperature += area.Temperature[neighbor];
+            rainfall += area.Rainfall[neighbor];
+            weight++;
+        }
+        return ((short)(elevation / weight), (short)(temperature / weight), (ushort)(rainfall / weight));
     }
 
     private static void VisitChunks(ChunkGrid chunks, Action<int, int, int> visit,
@@ -205,9 +258,14 @@ public static partial class WorldGenerator
         }, progress, step, from, 100);
     }
 
-    private static (short Elevation, float Plain) LandElevation(float x, float y, float aspect, float altitude, uint seed)
+    private static (short Elevation, float Plain) LandElevation(float x, float y, float aspect, float altitude, uint seed, float? sculptedRidge)
     {
         float ridge = 1f - Math.Abs(2f * Noise(x * 22f, y * 11f, seed ^ 0xC56F1D4Bu) - 1f);
+        if (sculptedRidge is float crest)
+        {
+            ridge = Math.Max(ridge * 0.58f, crest);
+            altitude *= 0.62f;
+        }
         float rugged = Math.Clamp(altitude * (1100f + 3300f * ridge * ridge), 0, 7200);
         float regionX = x * aspect;
         uint plainSeed = seed ^ 0x5DC9A4F3u;
@@ -215,6 +273,11 @@ public static partial class WorldGenerator
             + 0.19f * Noise(regionX * 10f, y * 10f, plainSeed + 11u);
         float plain = Smooth(Math.Clamp((region - 0.37f) / 0.27f, 0f, 1f))
             * (1f - Smooth(Math.Clamp((altitude - 0.45f) / 0.43f, 0f, 1f)));
+        if (sculptedRidge is float mountain)
+        {
+            plain *= 1f - mountain;
+            rugged = Math.Min(7200f, rugged + 2550f * mountain * Smooth(Math.Clamp(altitude / 0.27f, 0f, 1f)));
+        }
         float lowland = (90f + 55f * Noise(regionX * 3.1f, y * 3.1f, plainSeed + 29u))
             * Smooth(Math.Clamp(altitude / 0.20f, 0f, 1f));
         return ((short)Interpolate(rugged, Math.Min(rugged, lowland), plain), plain);
@@ -234,7 +297,7 @@ public static partial class WorldGenerator
     };
 
 
-    private static void RefineLandBiomes(GenerationArea area, bool[] openPlains, Action<GenerationProgress>? progress)
+    private static void RefineLandBiomes(GenerationArea area, bool[] openPlains, Action<GenerationProgress>? progress, int end)
     {
         var grown = new BiomeType[area.Count];
         GrowForest(area, openPlains, area.Biomes, grown, progress, 65, 79);
@@ -244,7 +307,7 @@ public static partial class WorldGenerator
         {
             if (Biomes.IsForest(grown[i]) && ForestNeighbors(area, grown, area.WorldHex(col, row)) == 0)
                 area.Biomes[i] = ChooseBiome(area.Elevation[i], area.Temperature[i], area.Rainfall[i], forests: false);
-        }, progress, GenerationStep.Biomes, 93, 100);
+        }, progress, GenerationStep.Biomes, 93, end);
     }
 
     private static void GrowForest(GenerationArea area, bool[] openPlains, BiomeType[] source, BiomeType[] target,
@@ -354,10 +417,12 @@ public static partial class WorldGenerator
         return (temperature, rainfall);
     }
 
-    private static float SeaExposure(Func<int, int, float> scoreAt, float level, int width, int height, int x, int y, int radius)
+    private static float SeaExposure(Func<int, int, float> scoreAt, float level, int width, int height, int x, int y, int radius, bool wrap)
     {
-        float west = scoreAt(Math.Max(0, x - radius), y);
-        float east = scoreAt(Math.Min(width - 1, x + radius), y);
+        int left = x - radius;
+        int right = x + radius;
+        float west = scoreAt(wrap ? (left % width + width) % width : Math.Max(0, left), y);
+        float east = scoreAt(wrap ? right % width : Math.Min(width - 1, right), y);
         float north = scoreAt(x, Math.Max(0, y - radius));
         float south = scoreAt(x, Math.Min(height - 1, y + radius));
         float lowest = Math.Min(Math.Min(west, east), Math.Min(north, south));

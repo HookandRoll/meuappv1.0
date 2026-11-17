@@ -10,8 +10,8 @@ config_version=5
 
 [application]
 
-config/name="World Simulation RPG"
-config/version="0.2.0"
+config/name="Jota Fantasy Map Maker"
+config/version="1.0.0-alpha"
 run/main_scene="res://src/GodotApp/Map.tscn"
 config/features=PackedStringArray("4.7", "C#", "GL Compatibility")
 

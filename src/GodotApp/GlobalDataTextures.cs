@@ -8,17 +8,21 @@ internal sealed class GlobalDataTextures : IDisposable
 {
     private readonly Image _terrainImage;
     private readonly Image _climateImage;
+    private readonly Image _detailImage;
     public ImageTexture Terrain { get; }
     public ImageTexture Climate { get; }
+    public ImageTexture Details { get; }
 
-    internal readonly record struct Buffers(byte[] Terrain, byte[] Climate);
+    internal readonly record struct Buffers(byte[] Terrain, byte[] Climate, byte[] Details);
 
     public GlobalDataTextures(WorldData world, Buffers buffers)
     {
         _terrainImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rgba8, buffers.Terrain);
         _climateImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rgba8, buffers.Climate);
+        _detailImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.R8, buffers.Details);
         Terrain = ImageTexture.CreateFromImage(_terrainImage);
         Climate = ImageTexture.CreateFromImage(_climateImage);
+        Details = ImageTexture.CreateFromImage(_detailImage);
     }
 
     public static Buffers BuildBuffers(WorldData world)
@@ -43,22 +47,63 @@ internal sealed class GlobalDataTextures : IDisposable
             MarkReliefSymbols(world, terrain);
         if (world.Manifest.Generation.Stage == GenerationStage.Terrain)
             MarkVegetationPatches(world, terrain);
+        MarkTightShorelines(world, terrain);
 
-        return new Buffers(terrain, climate);
+        return new Buffers(terrain, climate, MapDetailIcons.Build(world, terrain));
     }
+
+    private static void MarkTightShorelines(WorldData world, byte[] terrain)
+    {
+        // The low four bits hold the biome ID. The next two hold local shore crowding.
+        for (int index = 0; index < world.Count; index++)
+        {
+            if ((world.Flags[index] & WorldData.CoastFlag) == 0 || world.Water[index] != WaterType.None)
+                continue;
+
+            Hex hex = HexGrid.FromOffset(index % world.Width, index / world.Width);
+            int landNeighbors = 0;
+            for (int direction = 0; direction < 6; direction++)
+            {
+                int neighbor = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, world.Manifest.HorizontalWrap);
+                if (neighbor < 0 || world.Water[neighbor] == WaterType.None)
+                    landNeighbors++;
+                else if (world.Water[neighbor] == WaterType.Ocean)
+                    MarkOceanCrowding(world, terrain, neighbor);
+            }
+            terrain[index * 4 + 2] |= (byte)(ShoreCrowding(landNeighbors) << 4);
+        }
+    }
+
+    private static void MarkOceanCrowding(WorldData world, byte[] terrain, int index)
+    {
+        Hex hex = HexGrid.FromOffset(index % world.Width, index / world.Width);
+        int oceanNeighbors = 0;
+        for (int direction = 0; direction < 6; direction++)
+        {
+            int neighbor = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, world.Manifest.HorizontalWrap);
+            if (neighbor < 0 || world.Water[neighbor] == WaterType.Ocean)
+                oceanNeighbors++;
+        }
+        terrain[index * 4 + 2] |= (byte)(ShoreCrowding(oceanNeighbors) << 4);
+    }
+
+    private static int ShoreCrowding(int neighbors) => neighbors <= 2 ? 3 : neighbors == 3 ? 1 : 0;
 
     public void UploadAll()
     {
         Terrain.Update(_terrainImage);
         Climate.Update(_climateImage);
+        Details.Update(_detailImage);
     }
 
     public void Dispose()
     {
         Terrain.Dispose();
         Climate.Dispose();
+        Details.Dispose();
         _terrainImage.Dispose();
         _climateImage.Dispose();
+        _detailImage.Dispose();
     }
 
     private static void Pack(byte[] bytes, int index, ushort value)

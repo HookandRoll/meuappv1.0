@@ -11,6 +11,7 @@ public partial class MapView
 {
     private enum MapAction { New = 100, Open, Recent, Save, SaveAs, Generate }
     private const int ProgressValuesPerStep = 101;
+    private static string ProjectName => ProjectSettings.GetSetting("application/config/name").AsString();
 
     private Control _emptyState = null!;
     private Control _mapControls = null!;
@@ -83,7 +84,10 @@ public partial class MapView
         _discardDialog.Canceled += () => _afterDiscard = null;
 
         using var config = new ConfigFile();
-        if (config.Load(_preferencesPath) == Error.Ok)
+        Error preferences = config.Load(_preferencesPath);
+        if (preferences == Error.FileNotFound && Path.GetDirectoryName(OS.GetUserDataDir()) is string mapsDirectory)
+            preferences = config.Load(Path.Combine(mapsDirectory, "World Simulation RPG", "mapmaker.cfg"));
+        if (preferences == Error.Ok)
             _recentPath = config.GetValue("maps", "recent", "").AsString();
         RefreshInterface();
     }
@@ -116,7 +120,7 @@ public partial class MapView
         AddMenuItem(menu, "Regenerar mapa inteiro…", 107, Key.P, disabled: true);
         header.AddChild(edit);
 
-        _title = AddLabel(header, "World Simulation RPG", 18, Ink);
+        _title = AddLabel(header, ProjectName, 18, Ink);
         _title.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
         _title.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
         var controls = new HBoxContainer();
@@ -137,6 +141,9 @@ public partial class MapView
         var vegetation = new CheckButton { Text = "Vegetação", ButtonPressed = true };
         vegetation.Toggled += enabled => _material.SetShaderParameter("show_vegetation", enabled);
         controls.AddChild(vegetation);
+        var details = new CheckButton { Text = "Ícones", ButtonPressed = true };
+        details.Toggled += enabled => _material.SetShaderParameter("show_details", enabled);
+        controls.AddChild(details);
         var fit = new Button { Text = "Centralizar" };
         fit.Pressed += FitMap;
         controls.AddChild(fit);
@@ -175,7 +182,7 @@ public partial class MapView
             Title = title,
             FileMode = mode,
             Access = FileDialog.AccessEnum.Filesystem,
-            Filters = new[] { "*.world ; Mapas World Simulation RPG" }
+            Filters = new[] { "*.world ; Mapas " + ProjectName }
         };
         AddChild(dialog);
         return dialog;
@@ -371,7 +378,7 @@ public partial class MapView
         _emptyState.Visible = !hasMap;
         _footer.Visible = hasMap && !_generationStatus.Visible;
         _mapControls.Visible = hasMap;
-        _title.Text = hasMap ? _world!.Manifest.WorldName + (_dirty ? " •" : "") : "World Simulation RPG";
+        _title.Text = hasMap ? _world!.Manifest.WorldName + (_dirty ? " •" : "") : ProjectName;
         _mapMenu.Disabled = _busy;
         _newButton.Disabled = _busy;
         _openButton.Disabled = _busy;

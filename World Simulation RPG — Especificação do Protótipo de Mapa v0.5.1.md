@@ -1,4 +1,4 @@
-# World Simulation RPG
+# Jota Fantasy Map Maker
 
 ## Especificação do Protótipo de Mapa v0.5.1
 
@@ -197,6 +197,12 @@ Cada etapa executa separadamente, usa a `Seed`, respeita `LockMask` e opera só 
 - **Temperatura:** latitude + queda por altitude (provisório: 6,5 °C por 1000 m) + temperatura base do mundo.
 - **Precipitação (v1 simples):** proximidade do oceano + latitude + elevação. Rain shadow e vento ficam no backlog.
 - **Biomas:** tabela determinística derivada de `Temperature`, `Rainfall`, `Elevation` e `WaterType`. Sempre pintáveis à mão.
+
+### Escultura continental
+
+O modo **Escultura continental** aplica domos, bacias, cordilheiras, vales e estreitos à grade inteira antes das etapas de relevo, clima e biomas. A regeneração regional reconstrói esse campo com a mesma seed e grava os campos gerados na região solicitada.
+
+Agradecemos a Azgaar e à equipe do **Fantasy Map Generator** pelas receitas de mapas de elevação que inspiraram este modo. [Azgaar’s Fantasy Map Generator](https://github.com/Azgaar/Fantasy-Map-Generator)
 
 ## 14. Hidrologia e rios
 

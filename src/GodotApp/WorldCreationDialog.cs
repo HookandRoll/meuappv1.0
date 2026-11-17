@@ -54,6 +54,7 @@ public partial class WorldCreationDialog : ConfirmationDialog
 
         _algorithm.AddItem("Ruído fractal (fBm)");
         _algorithm.AddItem("Centros de massas de terra");
+        _algorithm.AddItem("Escultura continental (estilo Azgaar)");
         AddField(_generationFields, "Algoritmo", _algorithm);
         var seedRow = new HBoxContainer();
         _seed.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
@@ -87,7 +88,7 @@ public partial class WorldCreationDialog : ConfirmationDialog
         _distance.Editable = existing is null;
         _stage.SetItemDisabled((int)GenerationStage.Blank, existing is not null);
         _stage.Select((int)GenerationStage.Terrain);
-        _algorithm.Select((int)(existing?.Generation.Algorithm ?? TerrainAlgorithm.Fractal));
+        _algorithm.Select((int)(existing?.Generation.Algorithm ?? TerrainAlgorithm.ContinentalSculpt));
         _continents.Value = existing?.Generation.Continents ?? 3;
         _land.Value = existing?.Generation.LandPercent ?? 38;
         _coast.Value = existing?.Generation.CoastDetail ?? 50;
