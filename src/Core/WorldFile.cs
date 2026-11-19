@@ -13,6 +13,7 @@ public static class WorldFile
     private const int SourceBytesPerHex = 14;
     private const int MaxManifestBytes = 32 * 1024;
     private const int MaxSparseBytes = 8 * 1024 * 1024;
+    private static long SparseLimit(WorldManifest manifest) => Math.Max(MaxSparseBytes, (long)manifest.Width * manifest.Height * 64);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -21,6 +22,8 @@ public static class WorldFile
 
     public static WorldManifest Save(string path, WorldData world, byte[]? preview)
     {
+        if (System.Text.Encoding.UTF8.GetByteCount(world.SparseEntities.GetRawText()) > SparseLimit(world.Manifest))
+            throw new InvalidDataException("Entidades esparsas acima do limite do mundo.");
         path = Path.GetFullPath(path);
         string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         var manifest = world.Manifest with { ModifiedAt = DateTimeOffset.UtcNow };
@@ -37,7 +40,12 @@ public static class WorldFile
                     using (var entry = archive.CreateEntry("dense_data.bin", CompressionLevel.Fastest).Open())
                         WriteDense(entry, world);
                     using (var entry = archive.CreateEntry("sparse_entities.json").Open())
-                        JsonSerializer.Serialize(entry, world.SparseEntities, JsonOptions);
+                        JsonSerializer.Serialize(entry, world.SparseEntities);
+                    if (world.Tectonics is not null)
+                    {
+                        using var tectonics = archive.CreateEntry("tectonics.json").Open();
+                        JsonSerializer.Serialize(tectonics, world.Tectonics, JsonOptions);
+                    }
                     if (preview is { Length: > 0 })
                     {
                         using var entry = archive.CreateEntry("preview.png", CompressionLevel.NoCompression).Open();
@@ -75,7 +83,7 @@ public static class WorldFile
         if (denseEntry.Length != expectedLength)
             throw new InvalidDataException("Tamanho incorreto dos dados de terreno.");
 
-        using var sparseStream = FindEntry(archive, "sparse_entities.json", MaxSparseBytes).Open();
+        using var sparseStream = FindEntry(archive, "sparse_entities.json", SparseLimit(manifest)).Open();
         using var sparse = JsonDocument.Parse(sparseStream);
         if (sparse.RootElement.ValueKind != JsonValueKind.Object)
             throw new InvalidDataException("Dados de entidades inválidos.");
@@ -86,8 +94,15 @@ public static class WorldFile
             if (dense.ReadByte() != -1)
                 throw new InvalidDataException("Dados extras no terreno.");
         }
+        if (archive.GetEntry("tectonics.json") is not null)
+        {
+            using var tectonics = FindEntry(archive, "tectonics.json", MaxSparseBytes).Open();
+            world.Tectonics = JsonSerializer.Deserialize<TectonicReference>(tectonics, JsonOptions);
+            world.Tectonics?.Validate(world.Width, world.Height);
+        }
         if (manifest.Generation.Stage != GenerationStage.Blank)
             world.RebuildCoast();
+        WorldGenerator.RebuildRivers(world);
         return world;
     }
 

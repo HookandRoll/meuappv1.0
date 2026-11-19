@@ -132,7 +132,7 @@ internal static class MapDetailIcons
             return biome is BiomeType.Alpine or BiomeType.Tundra || (climate && temperature <= 0)
                 ? [Icon.PedraNeve, Icon.Cabra, Icon.Caverna, Icon.FonteTermal]
                 : [Icon.Cabra, Icon.Caverna, Icon.PedraGrama, Icon.FonteTermal, Icon.Urso];
-        if ((world.Flags[cell] & WorldData.CoastFlag) != 0 && biome == BiomeType.None)
+        if (biome == BiomeType.None && world.IsCoast(cell))
             return [Icon.Conchas, Icon.PedraGrama, Icon.Caranguejo];
 
         return biome switch

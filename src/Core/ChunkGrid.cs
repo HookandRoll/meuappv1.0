@@ -1,8 +1,20 @@
 using System;
+using System.Collections.Generic;
 
 namespace Mapmaker.Core;
 
-public readonly record struct WorldRegion(int Column, int Row, int Width, int Height);
+public readonly record struct WorldRegion(int Column, int Row, int Width, int Height)
+{
+    public bool Contains(int column, int row) =>
+        column >= Column && column < Column + Width && row >= Row && row < Row + Height;
+
+    public IEnumerable<int> Cells(int worldWidth)
+    {
+        for (int row = Row; row < Row + Height; row++)
+        for (int column = Column; column < Column + Width; column++)
+            yield return row * worldWidth + column;
+    }
+}
 
 public readonly struct ChunkGrid
 {

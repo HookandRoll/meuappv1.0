@@ -4,6 +4,12 @@ render_mode unshaded;
 uniform sampler2D terrain_data : filter_nearest, repeat_disable;
 uniform sampler2D climate_data : filter_nearest, repeat_disable;
 uniform sampler2D detail_data : filter_nearest, repeat_disable;
+uniform sampler2D lock_data : filter_nearest, repeat_disable;
+uniform sampler2DArray editor_data : filter_nearest, repeat_disable;
+uniform sampler2D editor_climate_data : filter_nearest, repeat_disable;
+uniform int editor_band_height = 32;
+uniform bool editor_preview = false;
+uniform bool editor_climate = false;
 uniform sampler2DArray ground_art : source_color, filter_linear_mipmap, repeat_disable;
 uniform sampler2DArray relief_art : source_color, filter_linear_mipmap, repeat_disable;
 uniform sampler2DArray vegetation_art : source_color, filter_linear_mipmap, repeat_disable;
@@ -17,7 +23,11 @@ uniform bool show_relief = true;
 uniform bool show_vegetation = true;
 uniform bool show_details = true;
 uniform float detail_zoom : hint_range(0.0, 1.0);
-uniform ivec2 selected = ivec2(-1);
+uniform ivec4 selection_bounds = ivec4(-1);
+uniform ivec2 brush_center = ivec2(-1);
+uniform int brush_radius = 0;
+uniform int brush_shape = 0;
+uniform float brush_strength = 1.0;
 varying vec2 map_position;
 
 const float ROOT3 = 1.73205080757;
@@ -49,6 +59,38 @@ ivec2 nearest_hex(vec2 axial) {
 
 bool inside(ivec2 offset) {
     return all(greaterThanEqual(offset, ivec2(0))) && all(lessThan(offset, map_size));
+}
+
+bool within_selection(ivec2 offset) {
+    return all(greaterThanEqual(offset, selection_bounds.xy)) && all(lessThan(offset, selection_bounds.zw));
+}
+
+const ivec2 HEX_NEIGHBORS[6] = {
+    ivec2(1, 0), ivec2(0, 1), ivec2(-1, 1), ivec2(-1, 0), ivec2(0, -1), ivec2(1, -1)
+};
+
+float brush_distance(int q, int r) {
+    if (brush_shape == 0) {
+        return float(max(abs(r), max(abs(q), abs(q + r))));
+    }
+    vec2 p = abs(vec2(float(q) + float(r) * 0.5, float(r) * 0.8660254));
+    if (brush_shape == 1) {
+        return length(p);
+    }
+    return brush_shape == 2 ? max(p.x, p.y) : p.x + p.y;
+}
+
+float distance_to_brush(ivec2 hex) {
+    if (!inside(to_offset(hex)) || (selection_bounds.x >= 0 && !within_selection(to_offset(hex)))) {
+        return float(brush_radius) + 1.0;
+    }
+    int q = hex.x - (brush_center.x - (brush_center.y - (brush_center.y & 1)) / 2);
+    int r = hex.y - brush_center.y;
+    float distance = brush_distance(q, r);
+    if (horizontal_wrap) {
+        distance = min(distance, min(brush_distance(q + map_size.x, r), brush_distance(q - map_size.x, r)));
+    }
+    return distance;
 }
 
 ivec2 data_offset(ivec2 hex) {
@@ -400,7 +442,31 @@ void fragment() {
     vec3 color = vec3(0.038, 0.068, 0.083);
 
     if (inside(offset)) {
-        if (stage == 0 && layer != 5) {
+        if (editor_preview && layer != 2 && layer != 3) {
+            ivec3 preview_offset = ivec3(offset.x, offset.y % editor_band_height, offset.y / editor_band_height);
+            vec4 data = texelFetch(editor_data, preview_offset, 0);
+            int surface = int(round(data.a * 255.0));
+            int water = surface & 3;
+            int relief = (surface >> 2) & 7;
+            int locks = surface >> 6;
+            float elevation = unpack16(data.rg) - 32768.0;
+            if (layer == 5) {
+                color = locks == 2 ? vec3(0.69, 0.31, 0.37)
+                    : locks == 1 ? vec3(0.72, 0.53, 0.24) : vec3(0.14, 0.22, 0.24);
+            } else if (stage == 0) {
+                color = vec3(0.095, 0.15, 0.17);
+            } else if (layer == 1) {
+                color = mix(vec3(0.09, 0.14, 0.22), vec3(0.96, 0.87, 0.62),
+                    clamp((elevation + 2400.0) / 6800.0, 0.0, 1.0));
+            } else if (water == 0) {
+                color = biome_color(round(data.b * 255.0));
+                if (layer == 0) {
+                    color *= 0.83 + float(relief) * 0.095 + clamp(elevation * 0.00008, -0.12, 0.18);
+                }
+            } else {
+                color = water == 3 ? vec3(0.25, 0.41, 0.32) : water == 2 ? vec3(0.19, 0.38, 0.49) : OCEAN;
+            }
+        } else if (stage == 0 && layer != 5) {
             color = vec3(0.095, 0.15, 0.17);
         } else if (layer == 0) {
             vec4 data = sample_terrain(hex);
@@ -412,12 +478,14 @@ void fragment() {
                 ? mix(vec3(0.09, 0.14, 0.22), vec3(0.96, 0.87, 0.62), clamp((elevation + 2400.0) / 6800.0, 0.0, 1.0))
                 : (water_type(data) != 0 ? OCEAN : biome_color(float(biome_id(data))));
         } else if (layer == 2 || layer == 3) {
-            vec4 data = texelFetch(climate_data, offset, 0);
+            vec4 data = editor_climate ? texelFetch(editor_climate_data, offset, 0) : texelFetch(climate_data, offset, 0);
             color = layer == 2
                 ? mix(vec3(0.23, 0.49, 0.69), vec3(0.94, 0.46, 0.24), clamp((unpack16(data.rg) - 32468.0) / 650.0, 0.0, 1.0))
                 : mix(vec3(0.75, 0.56, 0.35), vec3(0.14, 0.42, 0.63), clamp(unpack16(data.ba) / 3000.0, 0.0, 1.0));
         } else {
-            color = vec3(0.14, 0.22, 0.24);
+            float locks = round(texelFetch(lock_data, offset, 0).r * 255.0);
+            color = locks >= 2.0 ? vec3(0.69, 0.31, 0.37)
+                : locks >= 1.0 ? vec3(0.72, 0.53, 0.24) : vec3(0.14, 0.22, 0.24);
         }
 
         vec2 local = abs(map_position - hex_center(hex));
@@ -428,8 +496,32 @@ void fragment() {
             float visibility = 1.0 - smoothstep(0.13, 0.35, units_per_pixel);
             color = mix(color, vec3(0.05, 0.12, 0.14), 0.6 * edge * visibility);
         }
-        if (all(equal(offset, selected))) {
-            color = mix(color, vec3(1.0, 0.84, 0.45), 0.28 + 0.72 * edge);
+        bool selected = within_selection(offset);
+        float brush_distance_at_hex = brush_center.x >= 0 ? distance_to_brush(hex) : float(brush_radius) + 1.0;
+        bool brushed = brush_distance_at_hex <= float(brush_radius) + 0.0001;
+        if (selected || brushed) {
+            float selection_edge = 0.0;
+            float brush_edge = 0.0;
+            vec2 center = hex_center(hex);
+            for (int i = 0; i < 6; i++) {
+                ivec2 neighbor = hex + HEX_NEIGHBORS[i];
+                vec2 normal = normalize(hex_center(neighbor) - center);
+                float side = ROOT3 * 0.5 - dot(map_position - center, normal);
+                float opacity = 1.0 - smoothstep(0.0, units_per_pixel * 1.6, side);
+                if (selected && !within_selection(to_offset(neighbor))) {
+                    selection_edge = max(selection_edge, opacity);
+                }
+                if (brushed && distance_to_brush(neighbor) > float(brush_radius) + 0.0001) {
+                    brush_edge = max(brush_edge, opacity);
+                }
+            }
+            if (selected) {
+                color = mix(color, vec3(1.0, 0.84, 0.45), 0.22 + 0.78 * selection_edge);
+            }
+            if (brushed) {
+                float weight = mix(1.0, brush_strength, brush_distance_at_hex / float(max(brush_radius, 1)));
+                color = mix(color, vec3(0.78, 0.98, 0.92), 0.22 * weight + 0.68 * brush_edge);
+            }
         }
     }
     COLOR = vec4(color, 1.0);

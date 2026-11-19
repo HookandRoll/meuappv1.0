@@ -4,3 +4,8 @@ bin/
 obj/
 /GodotSharp/
 /Godot_*.exe
+/dist/
+/*.world
+/project.godot*.tmp
+/results/*
+!/results/*.md

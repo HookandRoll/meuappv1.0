@@ -3,13 +3,13 @@ using System.Threading.Tasks;
 
 namespace Mapmaker.Core;
 
-public enum GenerationStep { Land, Elevation, Climate, Biomes }
+public enum GenerationStep { Land, Elevation, Climate, Biomes, Rivers }
 
 public readonly record struct GenerationProgress(GenerationStep Step, int Percent);
 
 public static partial class WorldGenerator
 {
-    public const int Version = 15;
+    public const int Version = 29;
     internal const short SculptedStraitDepth = -137;
     private const int HistogramSize = 2048;
     // Two forest growth passes read up to two hexes away each. Cleanup reads one more.
@@ -24,11 +24,44 @@ public static partial class WorldGenerator
 
         var area = new GenerationArea(world, new WorldRegion(0, 0, world.Width, world.Height), useWorldArrays: true);
         Generate(world, area, progress);
+        if (manifest.GeneratorVersion >= 18 && manifest.Generation.Algorithm == TerrainAlgorithm.ContinentalSculpt && manifest.Generation.Stage == GenerationStage.Terrain)
+        {
+            GenerateRivers(world, progress);
+            ApplyFluvialBiomes(world, new WorldRegion(0, 0, world.Width, world.Height));
+        }
         return world;
     }
 
     /// <summary>Restores the generated terrain in an offset-coordinate rectangle using the world's seed and settings.</summary>
     public static void RegenerateRegion(WorldData world, WorldRegion region, Action<GenerationProgress>? progress = null)
+        => RegenerateRegion(world, region, RegenerationMode.Everything, progress: progress);
+
+    public static void RegenerateRegion(WorldData world, WorldRegion region, RegenerationMode mode,
+        HexLocks field = HexLocks.None, Action<GenerationProgress>? progress = null)
+    {
+        HexLocks fields = HexLocks.Water | HexLocks.Elevation | HexLocks.Relief |
+            HexLocks.Temperature | HexLocks.Rainfall | HexLocks.Biome | HexLocks.Rivers;
+        if (!Enum.IsDefined(mode) || (field & ~fields) != 0 || (field != 0 && ((int)field & ((int)field - 1)) != 0))
+            throw new ArgumentException("Modo ou campo de regeneração inválido.");
+        if (field != HexLocks.None)
+            fields = field;
+        else
+        {
+            if (mode >= RegenerationMode.KeepWater)
+                fields &= ~HexLocks.Water;
+            if (mode == RegenerationMode.KeepWaterAndElevation)
+                fields &= ~(HexLocks.Elevation | HexLocks.Relief);
+        }
+        RegenerateRegion(world, region, fields, progress);
+        if ((fields & HexLocks.Rivers) != 0 && world.Manifest.GeneratorVersion >= 18 &&
+            world.Manifest.Generation.Stage == GenerationStage.Terrain && world.Manifest.Generation.Algorithm == TerrainAlgorithm.ContinentalSculpt)
+            RegenerateRivers(world, region);
+        if ((fields & HexLocks.Biome) != 0 && world.Manifest.GeneratorVersion >= 18)
+            ApplyFluvialBiomes(world, region);
+    }
+
+    private static void RegenerateRegion(WorldData world, WorldRegion region, HexLocks fields,
+        Action<GenerationProgress>? progress)
     {
         if (region.Width <= 0 || region.Height <= 0 || region.Column < 0 || region.Row < 0 ||
             region.Column > world.Width - region.Width || region.Row > world.Height - region.Height)
@@ -44,7 +77,8 @@ public static partial class WorldGenerator
             margin += 2;
         if (world.Manifest.Generation.Stage == GenerationStage.Terrain && world.Manifest.GeneratorVersion >= 15)
             margin += MinimumBeachSize - 1;
-        var area = new GenerationArea(world, ExpandRegion(world, region, margin));
+        var area = new GenerationArea(world, ExpandRegion(world, region, margin),
+            selection: region, fields: fields);
         Generate(world, area, progress);
         area.CopyRegionTo(world, region);
     }
@@ -98,7 +132,10 @@ public static partial class WorldGenerator
         WaterType[]? water = null;
         if (sculpt)
         {
-            (scores, ridges, seaLevel, water) = new ContinentalSculpture(manifest).Build(progress);
+            TectonicReference? tectonics = manifest.GeneratorVersion >= 18
+                ? world.Tectonics ?? TectonicReference.Create(manifest) : null;
+            if (world.Tectonics is null) world.Tectonics = tectonics;
+            (scores, ridges, seaLevel, water) = new ContinentalSculpture(manifest, tectonics).Build(progress);
         }
         else if (scores is not null)
         {
@@ -113,9 +150,11 @@ public static partial class WorldGenerator
             row = area.WorldRow(row);
             WaterType type = water is not null ? water[row * world.Width + col]
                 : ScoreAt(col, row) < seaLevel ? WaterType.Ocean : WaterType.None;
-            area.Water[i] = type;
-            area.Elevation[i] = type == WaterType.None ? (short)0 : (short)-1;
-        }, progress, GenerationStep.Land, scores is null ? 0 : 85, settings.Stage == GenerationStage.Land ? 95 : 100);
+            int cell = row * world.Width + col;
+            area.Water[i] = area.Writes(col, row, cell, HexLocks.Water) ? type : world.Water[cell];
+            area.Elevation[i] = area.Writes(col, row, cell, HexLocks.Elevation)
+                ? (area.Water[i] == WaterType.None ? (short)0 : (short)-1) : world.Elevation[cell];
+        }, progress, GenerationStep.Land, scores is null ? 0 : manifest.GeneratorVersion >= 20 ? 99 : 85, settings.Stage == GenerationStage.Land ? 95 : 100);
 
         if (settings.Stage == GenerationStage.Land)
         {
@@ -140,11 +179,13 @@ public static partial class WorldGenerator
             {
                 float? ridge = ridges?[row * world.Width + col];
                 (elevation, plain) = LandElevation((float)col / world.Width, (float)row / world.Height, aspect, altitude,
-                    seed, ridge, reliefDensity);
+                    seed, ridge, reliefDensity, manifest.GeneratorVersion == 27);
+                if (manifest.GeneratorVersion is >= 24 and < 26 && sculpt) elevation = NarrowRidgeElevation(elevation, ridge ?? 0, manifest.GeneratorVersion);
             }
 
-            area.Elevation[i] = elevation;
-            area.Relief[i] = elevation switch
+            int cell = row * world.Width + col;
+            area.Elevation[i] = area.Writes(col, row, cell, HexLocks.Elevation) ? elevation : world.Elevation[cell];
+            area.Relief[i] = !area.Writes(col, row, cell, HexLocks.Relief) ? world.Relief[cell] : area.Elevation[i] switch
             {
                 >= 3200 => ReliefType.Peak, >= 1850 => ReliefType.Mountains,
                 >= 650 => ReliefType.Hills, >= 220 => ReliefType.Rolling, _ => ReliefType.Flat
@@ -159,16 +200,62 @@ public static partial class WorldGenerator
         int climateRadius = Math.Max(1, world.Height / 24);
         float MaritimeScoreAt(int col, int row) => water?[row * world.Width + col] == WaterType.Lake
             ? seaLevel + 0.28f : ScoreAt(col, row);
-        Func<int, int, float> maritimeScore = water is null ? ScoreAt : MaritimeScoreAt;
+        float EditedMaritimeScore(int col, int row)
+        {
+            int cell = row * world.Width + col;
+            float score = water is null ? ScoreAt(col, row) : MaritimeScoreAt(col, row);
+            if (area.Writes(col, row, cell, HexLocks.Water))
+                return score;
+            WaterType generated = water is null ? (score < seaLevel ? WaterType.Ocean : WaterType.None) : water[cell];
+            WaterType current = world.Water[cell];
+            if (current == generated)
+                return score;
+            return current == WaterType.Ocean ? Math.Min(score, seaLevel - 0.22f) : Math.Max(score, seaLevel + 0.28f);
+        }
+        Func<int, int, float> maritimeScore = EditedMaritimeScore;
+        short ClimateElevation(int x, int y)
+        {
+            int cell = y * world.Width + x;
+            if (manifest.GeneratorVersion >= 25)
+            {
+                int local = area.Neighbor(HexGrid.FromOffset(x, y), 0, 0);
+                // Atmospheric uplift starts at the water surface, not the seabed.
+                return local >= 0 ? (area.Water[local] == WaterType.None ? area.Elevation[local] : (short)0)
+                    : (world.Water[cell] == WaterType.None ? world.Elevation[cell] : (short)0);
+            }
+            if (!area.Writes(x, y, cell, HexLocks.Elevation)) return world.Elevation[cell];
+            if (water?[cell] != WaterType.None) return 0;
+            short sample = LandElevation((float)x / world.Width, (float)y / world.Height, aspect, ScoreAt(x, y) - seaLevel,
+                seed, ridges?[cell], reliefDensity, manifest.GeneratorVersion == 27).Elevation;
+            return manifest.GeneratorVersion is >= 24 and < 26 && sculpt ? NarrowRidgeElevation(sample, ridges?[cell] ?? 0, manifest.GeneratorVersion) : sample;
+        }
+        WaterType ClimateWater(int x, int y) => area.Writes(x, y, y * world.Width + x, HexLocks.Water)
+            ? water?[y * world.Width + x] ?? WaterType.None : world.Water[y * world.Width + x];
         progress?.Invoke(new(GenerationStep.Climate, 0));
+        ushort[]? moisture = manifest.GeneratorVersion >= 25 && sculpt
+            ? BuildOrographicMoisture(world, area, ClimateElevation, ClimateWater) : null;
         VisitChunks(area.Chunks, (i, col, row) =>
         {
             col = area.WorldColumn(col);
             row = area.WorldRow(row);
             float maritime = area.Water[i] == WaterType.Ocean ? 1f
                 : SeaExposure(maritimeScore, seaLevel, world.Width, world.Height, col, row, climateRadius, sculpt && manifest.HorizontalWrap);
-            (area.Temperature[i], area.Rainfall[i]) = Climate((float)col / world.Width, (float)row / world.Height,
+            var (temperature, rainfall) = Climate((float)col / world.Width, (float)row / world.Height,
                 aspect, area.Elevation[i], maritime, seed);
+            if (moisture is not null)
+            {
+                int wind = ClimateWind(row, world.Height);
+                int upwind = col - wind;
+                if (manifest.HorizontalWrap) upwind = (upwind + world.Width) % world.Width;
+                else upwind = Math.Clamp(upwind, 0, world.Width - 1);
+                rainfall = ContinuousOrographicRain(rainfall, moisture[i] / 65535f, ClimateElevation(upwind, row), area.Elevation[i],
+                    area.Water[i], Math.Max(8, world.Height / 16f));
+            }
+            else if (manifest.GeneratorVersion >= 18 && sculpt)
+                rainfall = OrographicRain(col, row, world.Width, world.Height, manifest.HorizontalWrap, rainfall, ClimateElevation, ClimateWater, manifest.GeneratorVersion >= 20);
+            int cell = row * world.Width + col;
+            area.Temperature[i] = area.Writes(col, row, cell, HexLocks.Temperature) ? temperature : world.Temperature[cell];
+            area.Rainfall[i] = area.Writes(col, row, cell, HexLocks.Rainfall) ? rainfall : world.Rainfall[cell];
         }, progress, GenerationStep.Climate, 0, 100);
 
         progress?.Invoke(new(GenerationStep.Biomes, 0));
@@ -298,8 +385,33 @@ public static partial class WorldGenerator
             Noise((x - aspect) * frequency, y * frequency, seed), Smooth(x / aspect));
     }
 
+    private static short OrganicRidgeElevation(short generated, float ridge)
+    {
+        // Keep the v19 profile inside real ridges. Background continental domes
+        // may form highlands but must not independently become alpine blobs.
+        float influence = Smooth(Math.Clamp(ridge / 0.25f, 0, 1));
+        float highland = generated <= 1800 ? generated : 1800 + 300 * (1 - MathF.Exp(-(generated - 1800) / 700f));
+        return (short)Interpolate(highland, generated, influence);
+    }
+
+    private static short NarrowRidgeElevation(short generated, float ridge, int version)
+    {
+        // Broad uplift remains as hills and highland. Only the narrow collision
+        // spine can support alpine elevation and peaks.
+        float spine = Smooth(Math.Clamp((ridge - 0.12f) / 0.72f, 0, 1));
+        float shoulder = generated <= 1000 ? generated
+            : 1000 + 700 * (1 - MathF.Exp(-(generated - 1000) / 1100f));
+        // A smooth monotonic compression keeps the surrounding drainage gradients;
+        // a hard 1750 m cap would turn entire slopes into identical flat terraces.
+        if (version >= 25)
+            shoulder = generated <= 1200 ? generated : 1200 + 900 * (1 - MathF.Exp(-(generated - 1200) / 1400f));
+        float elevation = Interpolate(shoulder, generated + (version >= 25 ? 650 : 950) * spine * spine * spine,
+            version >= 25 ? spine : spine * spine);
+        return (short)Math.Min(6800, elevation);
+    }
+
     private static (short Elevation, float Plain) LandElevation(float x, float y, float aspect, float altitude, uint seed,
-        float? sculptedRidge, float? reliefDensity)
+        float? sculptedRidge, float? reliefDensity, bool feathered = false)
     {
         float ridge = 1f - Math.Abs(2f * Noise(x * 22f, y * 11f, seed ^ 0xC56F1D4Bu) - 1f);
         if (sculptedRidge is float crest)
@@ -317,7 +429,9 @@ public static partial class WorldGenerator
         if (sculptedRidge is float mountain)
         {
             plain *= 1f - mountain;
-            float uplift = reliefDensity.HasValue ? 1800f * mountain * MathF.Sqrt(mountain) : 2550f * mountain;
+            // The feathered field supplies the shoulders; reserve strong uplift for
+            // its core instead of raising every collision to the same high crest.
+            float uplift = feathered ? 1450f * mountain * mountain : reliefDensity.HasValue ? 1800f * mountain * MathF.Sqrt(mountain) : 2550f * mountain;
             rugged = Math.Min(7200f, rugged + uplift * Smooth(Math.Clamp(altitude / 0.27f, 0f, 1f)));
         }
         if (reliefDensity is float density)

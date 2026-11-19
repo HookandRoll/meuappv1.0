@@ -21,6 +21,9 @@ public partial class MapView
     private Button _newButton = null!;
     private Button _openButton = null!;
     private MenuButton _mapMenu = null!;
+    private Button _editorToggle = null!;
+    private MapEditorPanel _editorPanel = null!;
+    private CheckButton _gridToggle = null!;
     private WorldCreationDialog _creation = null!;
     private FileDialog _openDialog = null!;
     private FileDialog _saveDialog = null!;
@@ -36,6 +39,7 @@ public partial class MapView
     private string _preferencesPath = "user://mapmaker.cfg";
     private bool _dirty;
     private bool _busy;
+    private bool _saveAsNewFile;
 
     private void BuildInterface()
     {
@@ -61,6 +65,7 @@ public partial class MapView
         _generationBar = new ProgressBar { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
         generation.AddChild(_generationBar);
         _generationStatus.Hide();
+        BuildEditorPanel(hud);
 
         _creation = new WorldCreationDialog();
         _creation.CreateRequested = (manifest, fillingBlank) => _ = CreateWorldAsync(manifest, fillingBlank);
@@ -68,7 +73,7 @@ public partial class MapView
         _openDialog = MakeFileDialog("Abrir mapa", FileDialog.FileModeEnum.OpenFile);
         _openDialog.FileSelected += path => _ = OpenWorldAsync(path);
         _saveDialog = MakeFileDialog("Salvar mapa como", FileDialog.FileModeEnum.SaveFile);
-        _saveDialog.FileSelected += path => _ = SaveWorldAsync(path);
+        _saveDialog.FileSelected += OnSaveFileSelected;
         _message = new AcceptDialog { DialogAutowrap = true };
         AddChild(_message);
         _discardDialog = new ConfirmationDialog { Title = "Alterações sem salvar", DialogText = "O mapa tem alterações sem salvar. Descartar as alterações e continuar?" };
@@ -108,7 +113,7 @@ public partial class MapView
         header.AddChild(_mapMenu);
 
         var edit = new MenuButton { Text = "Editar" };
-        PopupMenu menu = edit.GetPopup();
+        PopupMenu menu = _editMenu = edit.GetPopup();
         AddMenuItem(menu, "Desfazer", 101, Key.Z, disabled: true);
         AddMenuItem(menu, "Refazer", 102, Key.Y, disabled: true);
         menu.AddSeparator();
@@ -118,7 +123,25 @@ public partial class MapView
         menu.AddSeparator();
         AddMenuItem(menu, "Regenerar área…", 106, Key.R, disabled: true);
         AddMenuItem(menu, "Regenerar mapa inteiro…", 107, Key.P, disabled: true);
+        menu.IdPressed += id =>
+        {
+            switch ((EditAction)id)
+            {
+                case EditAction.Undo: EditHistory(false); break;
+                case EditAction.Redo: EditHistory(true); break;
+                case EditAction.RegenerateSelection:
+                case EditAction.RegenerateWorld:
+                    SetEditorPanelOpen(true);
+                    if (_editorPanel.Visible)
+                        _editorPanel.SelectRegenerationTarget(id == (int)EditAction.RegenerateWorld ? 1 : 0);
+                    break;
+            }
+        };
         header.AddChild(edit);
+        _editorToggle = new CheckButton { Text = "Editar mapa" };
+        _editorToggle.AddThemeColorOverride("font_pressed_color", new Color("#edc66c"));
+        _editorToggle.Toggled += SetEditorPanelOpen;
+        header.AddChild(_editorToggle);
 
         _title = AddLabel(header, ProjectName, 18, Ink);
         _title.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
@@ -132,9 +155,9 @@ public partial class MapView
             _layerSelect.AddItem(layer);
         _layerSelect.ItemSelected += index => SetLayer((int)index);
         controls.AddChild(_layerSelect);
-        var grid = new CheckButton { Text = "Grade" };
-        grid.Toggled += enabled => _material.SetShaderParameter("show_grid", enabled);
-        controls.AddChild(grid);
+        _gridToggle = new CheckButton { Text = "Grade" };
+        _gridToggle.Toggled += enabled => _material.SetShaderParameter("show_grid", enabled);
+        controls.AddChild(_gridToggle);
         var relief = new CheckButton { Text = "Relevo", ButtonPressed = true };
         relief.Toggled += enabled => _material.SetShaderParameter("show_relief", enabled);
         controls.AddChild(relief);
@@ -147,6 +170,83 @@ public partial class MapView
         var fit = new Button { Text = "Centralizar" };
         fit.Pressed += FitMap;
         controls.AddChild(fit);
+    }
+
+    private void BuildEditorPanel(Control hud)
+    {
+        _editorPanel = new MapEditorPanel { Visible = false };
+        _editorPanel.ClearRequested += () => SelectHex(new Vector2I(-1, -1));
+        hud.AddChild(_editorPanel);
+        BindEditor();
+        hud.Resized += () => FitEditorLayout(hud.Size);
+        _editorPanel.MinimumSizeChanged += () => FitEditorLayout(hud.Size);
+        FitEditorLayout(hud.Size);
+    }
+
+    private void FitEditorLayout(Vector2 size)
+    {
+        bool compact = size.X < 1180;
+        _mapControls.AddThemeConstantOverride("separation", compact ? 6 : 14);
+        _title.AddThemeFontSizeOverride("font_size", compact ? 15 : 18);
+        _editorPanel.FitIn(size);
+        UpdateMapCanvas();
+    }
+
+    private void SetEditorPanelOpen(bool open)
+    {
+        if (_busy || _world is not WorldData world || _editorPanel.Visible == open)
+        {
+            _editorToggle.SetPressedNoSignal(_editorPanel.Visible);
+            return;
+        }
+        if (open)
+        {
+            StartEditorDraft(world);
+            SetEditorPanelVisible(true);
+        }
+        else
+        {
+            _editorToggle.SetPressedNoSignal(true);
+            RequestEditorFileAction(2);
+        }
+    }
+
+    private void SetEditorPanelVisible(bool open)
+    {
+        _editorToggle.SetPressedNoSignal(open);
+        if (_editorPanel.Visible == open)
+            return;
+        Vector2 previousCenter = MapCanvasRect().GetCenter();
+        if (open)
+            _editorPanel.FitIn(GetViewportRect().Size);
+        if (!open)
+        {
+            FinishGesture();
+            _material.SetShaderParameter(BrushCenter, NoHex);
+        }
+        _editorPanel.Visible = open;
+        UpdateMapCanvas();
+        _map.Position += MapCanvasRect().GetCenter() - previousCenter;
+    }
+
+    private Rect2 MapCanvasRect()
+    {
+        Rect2 viewport = GetViewportRect();
+        if (!_editorPanel.Visible)
+            return viewport;
+        return new Rect2(5, MapEditorPanel.Top, Mathf.Max(1, _editorPanel.Position.X - 14),
+            Mathf.Max(1, viewport.Size.Y - MapEditorPanel.Top - 69));
+    }
+
+    private void UpdateMapCanvas()
+    {
+        bool editing = _editorPanel.Visible;
+        Rect2 canvas = MapCanvasRect();
+        _footer.OffsetRight = editing ? canvas.End.X - GetViewportRect().Size.X : -18;
+        _mapClip.ClipChildren = editing ? CanvasItem.ClipChildrenMode.Only : CanvasItem.ClipChildrenMode.Disabled;
+        _mapClip.Polygon = editing
+            ? new[] { canvas.Position, new Vector2(canvas.End.X, canvas.Position.Y), canvas.End, new Vector2(canvas.Position.X, canvas.End.Y) }
+            : Array.Empty<Vector2>();
     }
 
     private void BuildStartPanel(Control hud)
@@ -202,6 +302,11 @@ public partial class MapView
     {
         if (_busy)
             return;
+        if (_editSource is not null && (MapAction)id is MapAction.Save or MapAction.SaveAs)
+        {
+            RequestEditorFileAction((MapAction)id == MapAction.Save ? 0 : 1);
+            return;
+        }
         switch ((MapAction)id)
         {
             case MapAction.New:
@@ -218,14 +323,7 @@ public partial class MapView
                 break;
             case MapAction.Save:
             case MapAction.SaveAs:
-                if (_world is not null)
-                {
-                    string name = string.Join("_", _world.Manifest.WorldName.Split(Path.GetInvalidFileNameChars()));
-                    if (_currentPath is not null)
-                        _saveDialog.CurrentDir = Path.GetDirectoryName(_currentPath)!;
-                    _saveDialog.CurrentFile = name + ".world";
-                    _saveDialog.PopupCenteredRatio(0.65f);
-                }
+                ShowSaveAsDialog();
                 break;
             case MapAction.Generate when _world?.Manifest.Generation.Stage == GenerationStage.Blank:
                 _creation.ShowForm(_world.Manifest);
@@ -233,8 +331,38 @@ public partial class MapView
         }
     }
 
+    private void ShowSaveAsDialog()
+    {
+        if (_world is null)
+            return;
+        _saveAsNewFile = _currentPath is not null;
+        string name = string.Join("_", _world.Manifest.WorldName.Split(Path.GetInvalidFileNameChars()));
+        if (_currentPath is not null)
+            _saveDialog.CurrentDir = Path.GetDirectoryName(_currentPath)!;
+        _saveDialog.CurrentFile = name + (_saveAsNewFile ? " — cópia" : "") + ".world";
+        _saveDialog.PopupCenteredRatio(0.65f);
+    }
+
+    private void OnSaveFileSelected(string path)
+    {
+        _saveDialog.Hide();
+        if (!path.EndsWith(".world", StringComparison.OrdinalIgnoreCase))
+            path += ".world";
+        if (_saveAsNewFile && _currentPath is string current &&
+            string.Equals(Path.GetFullPath(path), Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase))
+        {
+            _message.Title = "Salvar como";
+            _message.DialogText = "Escolha um nome diferente para criar o novo arquivo.";
+            _message.PopupCentered();
+            return;
+        }
+        _saveAsNewFile = false;
+        _ = SaveWorldAsync(path);
+    }
+
     private void ConfirmReplace(Action next)
     {
+        FinishGesture();
         if (!_dirty)
         {
             next();
@@ -285,7 +413,7 @@ public partial class MapView
         _generationStep.Text = (GenerationStep)(progress / ProgressValuesPerStep) switch
         {
             GenerationStep.Land => "Terra e água", GenerationStep.Elevation => "Elevação e relevo",
-            GenerationStep.Climate => "Temperatura e chuva", GenerationStep.Biomes => "Biomas", _ => ""
+            GenerationStep.Climate => "Temperatura e chuva", GenerationStep.Biomes => "Biomas", GenerationStep.Rivers => "Rios e lagos", _ => ""
         };
         _generationBar.Value = progress % ProgressValuesPerStep;
     }
@@ -303,7 +431,7 @@ public partial class MapView
             });
             InstallWorld(world, buffers);
             _currentPath = path;
-            _dirty = false;
+            MarkEditorSaved();
             RememberPath(path);
             _inspection.Text = "Mapa aberto.";
         });
@@ -317,15 +445,42 @@ public partial class MapView
             path += ".world";
         await RunOperation("Salvando mapa…", async () =>
         {
-            if (DisplayServer.GetName() != "headless")
-                await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
-            byte[]? preview = CapturePreview();
-            world.Manifest = await Task.Run(() => WorldFile.Save(path, world, preview));
-            _currentPath = path;
-            _dirty = false;
-            RememberPath(path);
-            _inspection.Text = $"Salvo em {Path.GetFileName(path)}";
+            _saving = true;
+            _saveFinished = false;
+            _saveStarted = Time.GetTicksMsec();
+            UpdateSaveProgress();
+            try
+            {
+                GlobalDataTextures.Buffers? prepared = null;
+                if (_editorPreview is not null && _draftTerrainChanged && _textures is not null)
+                    prepared = await Task.Run(() => GlobalDataTextures.BuildBuffers(world));
+                await SaveWorldFileAsync(path);
+                while (Time.GetTicksMsec() - _saveStarted < 3000)
+                    await Task.Delay(25);
+                _saveFinished = true;
+                UpdateSaveProgress();
+                await Task.Delay(180);
+                await ApplyEditorDraftAsync(prepared);
+                _inspection.Text = $"Salvo em {Path.GetFileName(path)}";
+            }
+            finally
+            {
+                _saving = false;
+                _editorPanel.ShowSaveProgress(false);
+            }
         });
+    }
+
+    private async Task SaveWorldFileAsync(string path)
+    {
+        WorldData world = _world!;
+        if (DisplayServer.GetName() != "headless")
+            await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+        byte[]? preview = CapturePreview();
+        world.Manifest = await Task.Run(() => WorldFile.Save(path, world, preview));
+        _currentPath = path;
+        MarkEditorSaved();
+        RememberPath(path);
     }
 
     private byte[]? CapturePreview()
@@ -353,6 +508,7 @@ public partial class MapView
     {
         if (_busy)
             return;
+        FinishGesture();
         _busy = true;
         _inspection.Text = status;
         _emptyStatus.Text = status;
@@ -384,6 +540,11 @@ public partial class MapView
         _emptyState.Visible = !hasMap;
         _footer.Visible = hasMap && !_generationStatus.Visible;
         _mapControls.Visible = hasMap;
+        _editorToggle.Visible = hasMap;
+        _editorToggle.Disabled = _busy || !hasMap;
+        if (!hasMap)
+            SetEditorPanelOpen(false);
+        RefreshEditor();
         _title.Text = hasMap ? _world!.Manifest.WorldName + (_dirty ? " •" : "") : ProjectName;
         _mapMenu.Disabled = _busy;
         _newButton.Disabled = _busy;

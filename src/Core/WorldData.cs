@@ -1,5 +1,6 @@
 using System;
 using System.Text.Json;
+using System.Collections.Generic;
 
 namespace Mapmaker.Core;
 
@@ -46,9 +47,13 @@ public sealed class WorldData
     public ushort[] Rainfall { get; }
     public ushort[] RoadEdges { get; }
     public ushort[] RiverEdges { get; }
+    internal Dictionary<int, List<int>> HexToRivers { get; } = new();
+    internal Dictionary<int, RiverRecord> RiversById { get; } = new();
+    internal (int HeadwaterJoins, int CurvedReaches) RiverDiagnostics { get; set; }
     public byte[] Flags { get; }
     public ushort[] LockMask { get; }
     public JsonElement SparseEntities { get; internal set; }
+    public TectonicReference? Tectonics { get; internal set; }
     // The sea level is derived from the manifest and recalibrated on demand after opening a save.
     internal float GeneratedSeaLevel { get; set; } = float.NaN;
 
@@ -88,24 +93,44 @@ public sealed class WorldData
             throw new ArgumentException("A escultura continental requer a versão 6 do gerador ou posterior.");
     }
 
+    internal WorldData CreateEditCopy()
+    {
+        var copy = new WorldData(Manifest) { SparseEntities = SparseEntities, Tectonics = Tectonics, GeneratedSeaLevel = GeneratedSeaLevel };
+        Elevation.CopyTo(copy.Elevation, 0);
+        Water.CopyTo(copy.Water, 0);
+        Relief.CopyTo(copy.Relief, 0);
+        Biomes.CopyTo(copy.Biomes, 0);
+        Temperature.CopyTo(copy.Temperature, 0);
+        Rainfall.CopyTo(copy.Rainfall, 0);
+        RoadEdges.CopyTo(copy.RoadEdges, 0);
+        RiverEdges.CopyTo(copy.RiverEdges, 0);
+        foreach (var (id, river) in RiversById) copy.RiversById[id] = river;
+        foreach (var (cell, rivers) in HexToRivers) copy.HexToRivers[cell] = new List<int>(rivers);
+        Flags.CopyTo(copy.Flags, 0);
+        LockMask.CopyTo(copy.LockMask, 0);
+        return copy;
+    }
+
     public void RebuildCoast()
     {
-        for (int row = 0; row < Height; row++)
-        for (int column = 0; column < Width; column++)
+        for (int cell = 0; cell < Count; cell++)
+            RefreshCoast(cell);
+    }
+
+    internal void RefreshCoast(int cell) =>
+        Flags[cell] = (byte)((Flags[cell] & ~CoastFlag) | (IsCoast(cell) ? CoastFlag : 0));
+
+    internal bool IsCoast(int cell)
+    {
+        if (Water[cell] != WaterType.None)
+            return false;
+        Hex hex = HexGrid.FromOffset(cell % Width, cell / Width);
+        for (int direction = 0; direction < 6; direction++)
         {
-            int cell = row * Width + column;
-            Flags[cell] &= unchecked((byte)~CoastFlag);
-            if (Water[cell] != WaterType.None)
-                continue;
-            Hex hex = HexGrid.FromOffset(column, row);
-            for (int direction = 0; direction < 6; direction++)
-            {
-                int neighbor = HexGrid.NeighborIndex(hex, direction, Width, Height, Manifest.HorizontalWrap);
-                if (neighbor < 0 || Water[neighbor] != WaterType.Ocean)
-                    continue;
-                Flags[cell] |= CoastFlag;
-                break;
-            }
+            int neighbor = HexGrid.NeighborIndex(hex, direction, Width, Height, Manifest.HorizontalWrap);
+            if (neighbor >= 0 && Water[neighbor] == WaterType.Ocean)
+                return true;
         }
+        return false;
     }
 }

@@ -56,22 +56,28 @@ internal sealed class GlobalDataTextures : IDisposable
     private static void MarkTightShorelines(WorldData world, byte[] terrain)
     {
         // The low four bits hold the biome ID. The next two hold local shore crowding.
+        // Derive the visual shoreline from water so it crosses the edge of an edit without writing to adjacent hexes.
         for (int index = 0; index < world.Count; index++)
         {
-            if ((world.Flags[index] & WorldData.CoastFlag) == 0 || world.Water[index] != WaterType.None)
+            if (world.Water[index] != WaterType.None)
                 continue;
 
             Hex hex = HexGrid.FromOffset(index % world.Width, index / world.Width);
             int landNeighbors = 0;
+            bool coast = false;
             for (int direction = 0; direction < 6; direction++)
             {
                 int neighbor = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, world.Manifest.HorizontalWrap);
                 if (neighbor < 0 || world.Water[neighbor] == WaterType.None)
                     landNeighbors++;
                 else if (world.Water[neighbor] == WaterType.Ocean)
+                {
+                    coast = true;
                     MarkOceanCrowding(world, terrain, neighbor);
+                }
             }
-            terrain[index * 4 + 2] |= (byte)(ShoreCrowding(landNeighbors) << 4);
+            if (coast)
+                terrain[index * 4 + 2] |= (byte)(ShoreCrowding(landNeighbors) << 4);
         }
     }
 

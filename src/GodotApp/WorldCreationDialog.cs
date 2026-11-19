@@ -48,6 +48,7 @@ public partial class WorldCreationDialog : ConfirmationDialog
         foreach (string stage in new[] { "Grade vazia", "Só terra e água", "Terra, água e relevo", "Terreno completo" })
             _stage.AddItem(stage);
         _stage.ItemSelected += _ => RefreshOptions();
+        _size.ItemSelected += _ => RefreshOptions();
         AddField(fields, "Conteúdo", _stage);
         form.AddChild(new HSeparator());
         form.AddChild(_generationFields);
@@ -55,6 +56,10 @@ public partial class WorldCreationDialog : ConfirmationDialog
         _algorithm.AddItem("Ruído fractal (fBm)");
         _algorithm.AddItem("Centros de massas de terra");
         _algorithm.AddItem("Escultura continental (estilo Azgaar)");
+        _algorithm.SetItemDisabled((int)TerrainAlgorithm.Fractal, true);
+        _algorithm.SetItemDisabled((int)TerrainAlgorithm.LandmassCenters, true);
+        _algorithm.SetItemTooltip((int)TerrainAlgorithm.Fractal, "Algoritmo legado. Disponível nos mundos salvos que já o utilizam.");
+        _algorithm.SetItemTooltip((int)TerrainAlgorithm.LandmassCenters, "Algoritmo legado. Disponível nos mundos salvos que já o utilizam.");
         AddField(_generationFields, "Algoritmo", _algorithm);
         var seedRow = new HBoxContainer();
         _seed.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
@@ -88,7 +93,7 @@ public partial class WorldCreationDialog : ConfirmationDialog
         _distance.Editable = existing is null;
         _stage.SetItemDisabled((int)GenerationStage.Blank, existing is not null);
         _stage.Select((int)GenerationStage.Terrain);
-        _algorithm.Select((int)(existing?.Generation.Algorithm ?? TerrainAlgorithm.ContinentalSculpt));
+        _algorithm.Select((int)TerrainAlgorithm.ContinentalSculpt);
         _continents.Value = existing?.Generation.Continents ?? 3;
         _land.Value = existing?.Generation.LandPercent ?? 38;
         _coast.Value = existing?.Generation.CoastDetail ?? 50;
@@ -108,6 +113,8 @@ public partial class WorldCreationDialog : ConfirmationDialog
         _hint.Text = generate
             ? "A seed reproduz o terreno. Continentes podem se unir\nou formar ilhas menores."
             : "Cria uma grade sem geografia. Para preenchê-la,\nuse Mapa → Gerar terreno.";
+        if (generate && _size.Selected <= 1)
+            _hint.Text += "\nMapas pequenos têm menos espaço para costas, placas e rios.\nPara mais detalhe natural, recomendamos 512 × 256 ou maior.";
         if (Visible)
             Size = FormSize();
     }
@@ -122,7 +129,7 @@ public partial class WorldCreationDialog : ConfirmationDialog
             return;
         }
 
-        var settings = new GenerationSettings((TerrainAlgorithm)_algorithm.Selected, (int)_continents.Value,
+        var settings = new GenerationSettings(TerrainAlgorithm.ContinentalSculpt, (int)_continents.Value,
             (int)_land.Value, (int)_coast.Value, (GenerationStage)_stage.Selected);
         DateTimeOffset now = DateTimeOffset.UtcNow;
         Vector2I size = _existing is null ? Sizes[_size.Selected] : new Vector2I(_existing.Width, _existing.Height);

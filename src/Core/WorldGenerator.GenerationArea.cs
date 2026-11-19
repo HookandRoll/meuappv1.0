@@ -11,6 +11,9 @@ public static partial class WorldGenerator
         private readonly int _worldWidth;
         private readonly bool _wrap;
         private readonly bool _fullWidth;
+        private readonly WorldRegion? _selection;
+        private readonly HexLocks _fields;
+        private readonly ushort[] _locks;
         public int WorldHeight { get; }
         public int Count => _bounds.Width * _bounds.Height;
         public ChunkGrid Chunks => new(_bounds.Width, _bounds.Height);
@@ -22,9 +25,13 @@ public static partial class WorldGenerator
         public ushort[] Rainfall { get; }
         public byte[] Flags { get; }
 
-        public GenerationArea(WorldData world, WorldRegion bounds, bool useWorldArrays = false)
+        public GenerationArea(WorldData world, WorldRegion bounds, bool useWorldArrays = false,
+            WorldRegion? selection = null, HexLocks fields = HexLocks.None)
         {
             _bounds = bounds;
+            _selection = selection;
+            _fields = fields;
+            _locks = world.LockMask;
             _worldWidth = world.Width;
             WorldHeight = world.Height;
             _wrap = world.Manifest.HorizontalWrap;
@@ -45,6 +52,10 @@ public static partial class WorldGenerator
         }
 
         public int WorldRow(int row) => row + _bounds.Row;
+
+        public bool Writes(int column, int row, int cell, HexLocks field) =>
+            _selection is not WorldRegion region ||
+            (region.Contains(column, row) && (_fields & field) != 0 && ((HexLocks)_locks[cell] & field) == 0);
 
         public Hex WorldHex(int column, int row) => HexGrid.FromOffset(WorldColumn(column), WorldRow(row));
 
@@ -81,11 +92,20 @@ public static partial class WorldGenerator
                 {
                     Array.Copy(Temperature, source, world.Temperature, destination, region.Width);
                     Array.Copy(Rainfall, source, world.Rainfall, destination, region.Width);
-                    Array.Copy(Biomes, source, world.Biomes, destination, region.Width);
+                    for (int offset = 0; offset < region.Width; offset++)
+                    {
+                        int i = destination + offset;
+                        if (Writes(region.Column + offset, row, i, HexLocks.Biome))
+                            world.Biomes[i] = Biomes[source + offset];
+                    }
                 }
-                for (int offset = 0; offset < region.Width; offset++)
-                    world.Flags[destination + offset] = (byte)((world.Flags[destination + offset] & ~WorldData.CoastFlag)
-                        | Flags[source + offset]);
+                if ((_fields & HexLocks.Water) != 0)
+                    for (int offset = 0; offset < region.Width; offset++)
+                    {
+                        int i = destination + offset;
+                        if (((HexLocks)_locks[i] & HexLocks.Flags) == 0)
+                            world.Flags[i] = (byte)((world.Flags[i] & ~WorldData.CoastFlag) | Flags[source + offset]);
+                    }
             }
         }
     }

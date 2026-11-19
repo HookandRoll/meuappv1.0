@@ -15,7 +15,7 @@ public partial class MapView
     private static WorldManifest TestManifest(int width, int height, TerrainAlgorithm algorithm)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        return new WorldManifest(WorldFile.CurrentVersion, "Mapa de teste", 1234, WorldGenerator.Version,
+        return new WorldManifest(WorldFile.CurrentVersion, "Mapa de teste", 1234, 17,
             width, height, false, 5, "km", now, now,
             new GenerationSettings(algorithm, 3, 38, 50, GenerationStage.Terrain));
     }
@@ -38,6 +38,7 @@ public partial class MapView
             VerifyDetailIcons(original);
             VerifyOceanShelf();
             VerifyRegionalGeneration();
+            VerifyNaturalGeneration();
             VerifyShorelineFinish();
             VerifyShallowInlets();
             VerifyCoastClusters();
@@ -104,6 +105,19 @@ public partial class MapView
 
             InstallWorld(loaded);
             RefreshInterface();
+            Vector2 mapPosition = _map.Position;
+            SetEditorPanelOpen(true);
+            Require(_editorPanel.Visible && _editorToggle.ButtonPressed && _mapClip.ClipChildren == ClipChildrenMode.Only,
+                "Editar mapa deve abrir o painel e delimitar a área do mapa.");
+            CancelEditorDraft();
+            Require(_map.Position.IsEqualApprox(mapPosition) && _mapClip.ClipChildren == ClipChildrenMode.Disabled,
+                "Fechar o painel deve restaurar a área do mapa e a posição da câmera.");
+            foreach (Vector2 window in new[] { new Vector2(1280, 800), new Vector2(1100, 700) })
+            {
+                _editorPanel.FitIn(window);
+                Require(_editorPanel.Position.Y + _editorPanel.Size.Y * _editorPanel.Scale.Y <= window.Y - 67f,
+                    "O painel de edição precisa caber acima do rodapé.");
+            }
             int coast = Array.FindIndex(loaded.Flags, flags => (flags & WorldData.CoastFlag) != 0);
             Hex coastHex = HexGrid.FromOffset(coast % loaded.Width, coast / loaded.Width);
             int coastalOcean = Enumerable.Range(0, 6)
@@ -127,7 +141,13 @@ public partial class MapView
             Require(_world?.Manifest.Generation.Algorithm == TerrainAlgorithm.LandmassCenters && _world.Width == small.Width
                 && _currentPath == path && !_dirty, "Abrir não restaurou o mapa salvo.");
             VerifyContinentalSculpture(path);
-            GD.Print($"Smoke test passed. 524288 hexes, save/load {seconds:F3} s; regional seams and continental sculpture verified.");
+            VerifyIslandPresets();
+            VerifyIslandChannels();
+            await VerifyEditing(path);
+            await VerifyEditing(path, 18);
+            if (DisplayServer.GetName() != "headless" && OS.GetCmdlineUserArgs().Contains("--measure-editor"))
+                await MeasureEditorPreview(loaded);
+            GD.Print($"Smoke test passed. 524288 hexes, save/load {seconds:F3} s; regional seams, continental sculpture and M3 editing verified.");
             GetTree().Quit();
         }
         catch (Exception error)
@@ -189,9 +209,19 @@ public partial class MapView
                 _layerSelect.Select(0);
                 if (!large)
                 {
-                    ShowDetail(FindDetailCenter(world), 24);
+                    Vector2I editorCenter = FindDetailCenter(world);
+                    ShowDetail(editorCenter, 24);
                     await NextDraw();
                     Screenshot("benchmark-sculpt-icons.png");
+                    ShowDetail(editorCenter, 6.5f);
+                    SelectHex(editorCenter);
+                    SetEditorPanelOpen(true);
+                    _gridToggle.ButtonPressed = true;
+                    await NextDraw();
+                    Screenshot("benchmark-editor-panel.png");
+                    _gridToggle.ButtonPressed = false;
+                    CancelEditorDraft();
+                    SelectHex(new Vector2I(-1, -1));
                     if (shared >= 0)
                     {
                         var hex = new Vector2I(shared % world.Width, shared / world.Width);
@@ -328,7 +358,7 @@ public partial class MapView
         WorldManifest manifest = TestManifest(193, 223, TerrainAlgorithm.Fractal);
         var reports = new List<GenerationProgress>();
         WorldData reference = WorldGenerator.Create(manifest, reports.Add);
-        GenerationStep[] steps = Enum.GetValues<GenerationStep>();
+        GenerationStep[] steps = Enum.GetValues<GenerationStep>().Where(step => step != GenerationStep.Rivers).ToArray();
         Require(reports.Select(report => report.Step).Distinct().SequenceEqual(steps), "Ordem de geração incorreta.");
         foreach (GenerationStep step in steps)
         {
@@ -502,8 +532,89 @@ public partial class MapView
                 }
             }
         }
-        Require(continents == settings.Continents && land == world.Count * settings.LandPercent / 100,
+        Require((world.Manifest.GeneratorVersion >= 16 ? continents >= settings.Continents : continents == settings.Continents)
+            && land == world.Count * settings.LandPercent / 100,
             $"Esperava {settings.Continents} massas separadas e {settings.LandPercent}% de terra. Obtive {continents} massas e {land} hexes.");
+    }
+
+    private static void VerifyIslandPresets()
+    {
+        foreach (int seed in new[] { 7, 1234, 90817 })
+        foreach (int land in new[] { 10, 38, 65 })
+        foreach (int size in new[] { 32, 128, 256 })
+        {
+            WorldManifest manifest = TestManifest(size, Math.Max(32, size / 2), TerrainAlgorithm.ContinentalSculpt);
+            manifest = manifest with { Seed = seed,
+                Generation = manifest.Generation with { LandPercent = land, Stage = GenerationStage.Land } };
+            WorldData world = WorldGenerator.Create(manifest);
+            VerifySeparatedLand(world);
+        }
+    }
+
+    private static void VerifyIslandChannels()
+    {
+        foreach (int seed in new[] { 7, 1234, 90817 })
+        {
+            WorldManifest manifest = TestManifest(512, 256, TerrainAlgorithm.ContinentalSculpt) with { Seed = seed };
+            WorldData world = WorldGenerator.Create(manifest);
+            var owner = new int[world.Count];
+            Array.Fill(owner, -1);
+            var sizes = new List<int>();
+            var queue = new Queue<int>();
+            for (int start = 0; start < world.Count; start++)
+            {
+                if (owner[start] >= 0 || world.Water[start] != WaterType.None)
+                    continue;
+                int label = sizes.Count;
+                int size = 0;
+                owner[start] = label;
+                queue.Enqueue(start);
+                while (queue.TryDequeue(out int cell))
+                {
+                    size++;
+                    Hex hex = HexGrid.FromOffset(cell % world.Width, cell / world.Width);
+                    for (int direction = 0; direction < 6; direction++)
+                    {
+                        int next = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, false);
+                        if (next < 0 || owner[next] >= 0 || world.Water[next] != WaterType.None)
+                            continue;
+                        owner[next] = label;
+                        queue.Enqueue(next);
+                    }
+                }
+                sizes.Add(size);
+            }
+            var mainland = sizes.Select((size, label) => (size, label)).OrderByDescending(pair => pair.size)
+                .Take(manifest.Generation.Continents).Select(pair => pair.label).ToHashSet();
+            Require(sizes.Count >= mainland.Count + 4, "O preset precisa gerar várias ilhas separadas dos continentes.");
+            var distance = new int[world.Count];
+            for (int i = 0; i < world.Count; i++)
+                if (owner[i] >= 0)
+                    queue.Enqueue(i);
+            while (queue.TryDequeue(out int cell))
+            {
+                Hex hex = HexGrid.FromOffset(cell % world.Width, cell / world.Width);
+                for (int direction = 0; direction < 6; direction++)
+                {
+                    int next = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, false);
+                    if (next < 0)
+                        continue;
+                    if (owner[next] < 0)
+                    {
+                        owner[next] = owner[cell];
+                        distance[next] = distance[cell] + 1;
+                        queue.Enqueue(next);
+                    }
+                    else if (owner[next] != owner[cell] && (!mainland.Contains(owner[next]) || !mainland.Contains(owner[cell])))
+                    {
+                        bool nearMainland = mainland.Contains(owner[next]) || mainland.Contains(owner[cell]);
+                        int gap = nearMainland ? Math.Max(4, world.Height / 32) : Math.Max(4, world.Height / 48);
+                        Require(distance[cell] + distance[next] + 1 >= gap,
+                            $"Canal estreito na seed {seed} entre massas {owner[cell]} e {owner[next]}.");
+                    }
+                }
+            }
+        }
     }
 
     private static void VerifyShorelineFinish()

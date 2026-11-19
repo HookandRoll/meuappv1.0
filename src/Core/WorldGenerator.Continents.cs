@@ -119,6 +119,8 @@ public static partial class WorldGenerator
             }
 
             target = Math.Min(available, target);
+            int islandBudget = _islandCoasts ? Math.Max(7, target / 60) : 0;
+            target -= islandBudget;
             Array.Clear(visited);
             Array.Fill(water, WaterType.Lake);
             var frontier = new PriorityQueue<int, (float Score, int Cell)>();
@@ -153,6 +155,7 @@ public static partial class WorldGenerator
                 }
                 assigned = nextAssigned;
             }
+            if (_compactCoasts) CompactMainland(water, territory, centers);
             progress?.Invoke(new(GenerationStep.Land, 83));
 
             LabelOpenSea(water, queue);
@@ -165,7 +168,97 @@ public static partial class WorldGenerator
                     ? Math.Max(0.002f, altitude)
                     : Math.Min(-0.002f, altitude);
             }, progress, GenerationStep.Land, 84, 85);
+            if (_islandCoasts)
+            {
+                bool[]? mainland = null;
+                if (_spacedIslands)
+                {
+                    mainland = new bool[water.Length];
+                    for (int i = 0; i < water.Length; i++)
+                        mainland[i] = water[i] == WaterType.None;
+                }
+                int remaining = AddIslandChains(water, islandBudget, out bool[] islandReserve, progress);
+                // Compact, land-heavy maps can run out of offshore room. Return that
+                // part of the budget to the existing territories without joining them.
+                frontier.Clear();
+                Array.Clear(visited);
+                for (int i = 0; i < water.Length; i++)
+                    if (water[i] == WaterType.None && territory[i] != 0 && (mainland is null || mainland[i]))
+                        AddFrontier(i);
+                while (remaining > 0 && frontier.TryDequeue(out int cell, out _))
+                {
+                    water[cell] = WaterType.None;
+                    _scores[cell] = Math.Max(0.002f, _scores[cell]);
+                    remaining--;
+                    AddFrontier(cell);
+                }
+                if (remaining != 0)
+                    throw new InvalidOperationException("A reserva de terra não pôde ser distribuída.");
+                for (int i = 0; i < water.Length; i++)
+                    if (water[i] != WaterType.None)
+                        water[i] = WaterType.Lake;
+                LabelOpenSea(water, queue);
+
+                void AddFrontier(int cell)
+                {
+                    Hex hex = HexAt(cell);
+                    for (int direction = 0; direction < 6; direction++)
+                    {
+                        int neighbor = Neighbor(hex, direction);
+                        if (neighbor < 0 || visited[neighbor] || water[neighbor] == WaterType.None ||
+                            territory[neighbor] != territory[cell] || (_spacedIslands && islandReserve[neighbor]))
+                            continue;
+                        visited[neighbor] = true;
+                        frontier.Enqueue(neighbor, (-_scores[neighbor], neighbor));
+                    }
+                }
+            }
             return (_scores, _ridges, 0f, water);
+        }
+
+        private void CompactMainland(WaterType[] water, byte[] territory, int[] centers)
+        {
+            var anchor = new HashSet<int>(centers);
+            var removed = new List<int>();
+            int LandNeighbors(int cell)
+            {
+                int count = 0; Hex hex = HexAt(cell);
+                for (int d = 0; d < 6; d++) { int n = Neighbor(hex, d); if (n >= 0 && water[n] == WaterType.None) count++; }
+                return count;
+            }
+            // Remove long one-cell ridges exposed as land by connected quota growth.
+            // Regrow the same area only where it has broad mainland support.
+            for (int pass = 0; pass < 3; pass++)
+            {
+                removed.Clear();
+                for (int i = 0; i < water.Length; i++)
+                    if (water[i] == WaterType.None && !anchor.Contains(i) && LandNeighbors(i) <= 2) removed.Add(i);
+                foreach (int i in removed) water[i] = WaterType.Lake;
+                int remaining = removed.Count;
+                var frontier = new PriorityQueue<int, (float Score, int Cell)>();
+                var seen = new HashSet<int>();
+                void Offer(int cell)
+                {
+                    if (water[cell] == WaterType.None || territory[cell] == 0 || LandNeighbors(cell) < 3 || !seen.Add(cell)) return;
+                    Hex hex = HexAt(cell);
+                    for (int d = 0; d < 6; d++)
+                    {
+                        int n = Neighbor(hex, d);
+                        if (n >= 0 && water[n] == WaterType.None && territory[n] != territory[cell]) return;
+                    }
+                    frontier.Enqueue(cell, (-_scores[cell], cell));
+                }
+                for (int i = 0; i < water.Length; i++) if (water[i] != WaterType.None) Offer(i);
+                while (remaining > 0 && frontier.TryDequeue(out int cell, out _))
+                {
+                    water[cell] = WaterType.None; remaining--;
+                    Hex hex = HexAt(cell);
+                    for (int d = 0; d < 6; d++) { int n = Neighbor(hex, d); if (n >= 0) Offer(n); }
+                }
+                // Unusual cramped maps retain the unmatched original cells to conserve area.
+                foreach (int i in removed)
+                    if (remaining > 0 && water[i] != WaterType.None) { water[i] = WaterType.None; remaining--; }
+            }
         }
 
         private void LabelOpenSea(WaterType[] water, Queue<int> queue)
