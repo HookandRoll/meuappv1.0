@@ -6,9 +6,9 @@ namespace Mapmaker.GodotApp;
 
 internal sealed partial class MapEditorPanel : PanelContainer
 {
-    private static readonly Color Ink = new("#f0efdf");
-    private static readonly Color Muted = new("#a9beb9");
-    private static readonly Color Gold = new("#edc66c");
+    private static readonly Color Ink = new("#ebe2cc");
+    private static readonly Color Muted = new("#a89b84");
+    private static readonly Color Gold = new("#d6ad5c");
     private const float PanelWidth = 485;
     private const float RightMargin = 6;
     internal const float Top = 86;
@@ -73,7 +73,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
     {
         MouseForcePassScrollEvents = false;
         CustomMinimumSize = new Vector2(PanelWidth, 0);
-        AddThemeStyleboxOverride("panel", Surface(new Color("#14292e"), new Color("#3b575b"), 8, 7));
+        AddThemeStyleboxOverride("panel", Surface(new Color("#1c1712"), new Color("#5e4c36"), 6, 7));
         var layout = Row(this, 7);
         var stack = Stack(5);
         stack.SizeFlagsHorizontal = SizeFlags.ExpandFill;
@@ -195,7 +195,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
     {
         _pageHeadings = headings;
         var rail = new PanelContainer { CustomMinimumSize = new Vector2(89, 0) };
-        rail.AddThemeStyleboxOverride("panel", Surface(new Color("#0e2025"), new Color("#3b575b"), 6, 4));
+        rail.AddThemeStyleboxOverride("panel", Surface(new Color("#15110d"), new Color("#5e4c36"), 5, 4));
         layout.AddChild(rail);
         var shortcuts = Stack(6);
         rail.AddChild(shortcuts);
@@ -210,7 +210,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
             shortcut.ToggleMode = true;
             shortcut.ButtonGroup = group;
             shortcut.SetPressedNoSignal(i == 0);
-            shortcut.AddThemeStyleboxOverride("normal", Surface(new Color("#0e2025"), new Color("#0e2025"), 5, 0));
+            shortcut.AddThemeStyleboxOverride("normal", Surface(new Color("#15110d"), new Color("#15110d"), 5, 0));
             VBoxContainer contents = Stack(0);
             contents.MouseFilter = MouseFilterEnum.Ignore;
             contents.Alignment = BoxContainer.AlignmentMode.Center;
@@ -431,7 +431,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
             tile.ToggleMode = true;
             var sample = new TextureRect
             {
-                Texture = GD.Load<Texture2D>($"res://tiles/{tiles[i]}.png"),
+                Texture = LoadTileTexture(tiles[i]),
                 ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
                 MouseFilter = MouseFilterEnum.Ignore
             };
@@ -482,9 +482,22 @@ internal sealed partial class MapEditorPanel : PanelContainer
     {
         Button swatch = ActionButton(_swatches, name, stretch: true);
         swatch.TooltipText = MapView.BiomeLabel(biome);
-        swatch.Icon = GD.Load<Texture2D>($"res://tiles/{tile}.png");
+        swatch.Icon = LoadTileTexture(tile);
         swatch.AddThemeConstantOverride("icon_max_width", 19);
         swatch.Pressed += () => ActivateBiome(biome);
+    }
+
+    private static Texture2D LoadTileTexture(string tile)
+    {
+        string resPath = $"res://tiles/{tile}.png";
+        string globalPath = ProjectSettings.GlobalizePath(resPath);
+        if (System.IO.File.Exists(globalPath))
+        {
+            using var image = new Image();
+            if (image.Load(globalPath) == Error.Ok && !image.IsEmpty())
+                return ImageTexture.CreateFromImage(image);
+        }
+        return GD.Load<Texture2D>(resPath);
     }
 
     private void ActivateBiome(BiomeType biome)
@@ -673,7 +686,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
     private static (VBoxContainer Content, Label Title) Section(VBoxContainer parent, string heading)
     {
         var divider = new HSeparator();
-        var line = new StyleBoxLine { Color = new Color("#466064"), Thickness = 1 };
+        var line = new StyleBoxLine { Color = new Color("#4f402d"), Thickness = 1 };
         divider.AddThemeStyleboxOverride("separator", line);
         parent.AddChild(divider);
         VBoxContainer content = Stack(4);
@@ -721,11 +734,11 @@ internal sealed partial class MapEditorPanel : PanelContainer
         button.AddThemeFontSizeOverride("font_size", 13);
         button.AddThemeColorOverride("font_color", accent ? Gold : Ink);
         button.AddThemeColorOverride("font_pressed_color", Gold);
-        button.AddThemeColorOverride("font_disabled_color", accent ? new Color("#dbc38a") : new Color("#9aa9a7"));
-        button.AddThemeStyleboxOverride("normal", Surface(new Color("#172e33"), new Color("#425e62"), 5, 4));
-        button.AddThemeStyleboxOverride("hover", Surface(new Color("#264248"), new Color("#638185"), 5, 4));
-        button.AddThemeStyleboxOverride("pressed", Surface(new Color("#3c3929"), Gold, 5, 4));
-        button.AddThemeStyleboxOverride("disabled", Surface(accent ? new Color("#48402b") : new Color("#14272b"), new Color("#3b5153"), 5, 4));
+        button.AddThemeColorOverride("font_disabled_color", accent ? new Color("#b89c68") : new Color("#857a67"));
+        button.AddThemeStyleboxOverride("normal", Surface(new Color("#241d17"), new Color("#594732"), 4, 4));
+        button.AddThemeStyleboxOverride("hover", Surface(new Color("#33281f"), new Color("#7d6447"), 4, 4));
+        button.AddThemeStyleboxOverride("pressed", Surface(new Color("#3b2f1e"), Gold, 4, 4));
+        button.AddThemeStyleboxOverride("disabled", Surface(accent ? new Color("#332a1d") : new Color("#1a1511"), new Color("#3d3224"), 4, 4));
         parent.AddChild(button);
         return button;
     }

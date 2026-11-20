@@ -43,6 +43,15 @@ public partial class MapView
         Array.Sort(times);
         GD.Print($"Prévia de edição em {source.Width}×{source.Height}, 60 amostras com pincel ativo. " +
             $"Mediana {times[times.Length / 2]:F1} ms, p95 {times[56]:F1} ms até o fim do frame.");
+        GD.Print($"EDITOR MEMORY managed={GC.GetTotalMemory(true) / 1048576.0:F2} MiB, process working set={Process.GetCurrentProcess().WorkingSet64 / 1048576.0:F2} MiB");
+        Require(times[56] < 1000.0 / 30, "Prévia de edição ficou abaixo do gate de 30 FPS no percentil 95.");
+        System.IO.Directory.CreateDirectory("results/validation-v29");
+        System.IO.File.WriteAllText("results/validation-v29/editor-performance.json", System.Text.Json.JsonSerializer.Serialize(new
+        {
+            source.Manifest.GeneratorVersion, source.Width, source.Height, samples = times.Length,
+            medianMs = times[times.Length / 2], p95Ms = times[56],
+            managedBytes = GC.GetTotalMemory(false), processWorkingSetBytes = Process.GetCurrentProcess().WorkingSet64
+        }));
     }
 
     private async Task VerifyEditing(string path, int generatorVersion = 17)

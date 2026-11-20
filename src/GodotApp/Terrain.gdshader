@@ -10,7 +10,7 @@ uniform sampler2D editor_climate_data : filter_nearest, repeat_disable;
 uniform int editor_band_height = 32;
 uniform bool editor_preview = false;
 uniform bool editor_climate = false;
-uniform sampler2DArray ground_art : source_color, filter_linear_mipmap, repeat_disable;
+uniform sampler2DArray ground_art : source_color, filter_linear_mipmap, repeat_enable;
 uniform sampler2DArray relief_art : source_color, filter_linear_mipmap, repeat_disable;
 uniform sampler2DArray vegetation_art : source_color, filter_linear_mipmap, repeat_disable;
 uniform sampler2DArray detail_art : source_color, filter_linear_mipmap, repeat_disable;
@@ -31,11 +31,13 @@ uniform float brush_strength = 1.0;
 varying vec2 map_position;
 
 const float ROOT3 = 1.73205080757;
-const vec3 OCEAN = vec3(0.065, 0.19, 0.24);
-const vec3 SHALLOW = vec3(0.19, 0.43, 0.43);
-const vec3 BEACH = vec3(0.73, 0.67, 0.46);
-const float SHALLOW_OCEAN_ART = 10.0;
-const float DEEP_OCEAN_ART = 13.0;
+const int VARIANTS = 3;
+// Battle Brothers moody low-fantasy water & shore palette
+const vec3 OCEAN = vec3(0.082, 0.161, 0.188);
+const vec3 SHALLOW = vec3(0.165, 0.294, 0.314);
+const vec3 BEACH = vec3(0.655, 0.596, 0.451);
+const int SHALLOW_OCEAN_ART = 10;
+const int DEEP_OCEAN_ART = 13;
 
 void vertex() {
     map_position = VERTEX;
@@ -67,6 +69,13 @@ bool within_selection(ivec2 offset) {
 
 const ivec2 HEX_NEIGHBORS[6] = {
     ivec2(1, 0), ivec2(0, 1), ivec2(-1, 1), ivec2(-1, 0), ivec2(0, -1), ivec2(1, -1)
+};
+
+// Back-to-front 2.5D painter's order across 11 neighbor hexes so large jittered mountains & trees never clip
+const ivec2 PAINTER_HEXES[11] = {
+    ivec2(-1, -1), ivec2(0, -1), ivec2(1, -1), ivec2(2, -1),
+    ivec2(-1, 0), ivec2(0, 0), ivec2(1, 0),
+    ivec2(-2, 1), ivec2(-1, 1), ivec2(0, 1), ivec2(1, 1)
 };
 
 float brush_distance(int q, int r) {
@@ -114,17 +123,18 @@ float unpack16(vec2 bytes) {
     return dot(integer_bytes, vec2(1.0, 256.0));
 }
 
+// Battle Brothers earthy low-fantasy biome colors
 vec3 biome_color(float id) {
     if (id == 1.0) return BEACH;
-    if (id == 3.0) return vec3(0.26, 0.43, 0.30);
-    if (id == 4.0) return vec3(0.19, 0.38, 0.28);
-    if (id == 5.0) return vec3(0.67, 0.62, 0.35);
-    if (id == 6.0) return vec3(0.60, 0.54, 0.39);
-    if (id == 7.0) return vec3(0.73, 0.59, 0.41);
-    if (id == 8.0) return vec3(0.37, 0.49, 0.41);
-    if (id == 9.0) return vec3(0.67, 0.70, 0.64);
-    if (id == 10.0) return vec3(0.75, 0.73, 0.66);
-    return vec3(0.49, 0.55, 0.33);
+    if (id == 3.0) return vec3(0.23, 0.30, 0.16); // Temperate forest
+    if (id == 4.0) return vec3(0.19, 0.29, 0.14); // Rainforest
+    if (id == 5.0) return vec3(0.55, 0.47, 0.26); // Savanna
+    if (id == 6.0) return vec3(0.48, 0.42, 0.27); // Steppe
+    if (id == 7.0) return vec3(0.66, 0.55, 0.34); // Desert
+    if (id == 8.0) return vec3(0.25, 0.31, 0.22); // Taiga
+    if (id == 9.0) return vec3(0.54, 0.56, 0.51); // Tundra
+    if (id == 10.0) return vec3(0.81, 0.84, 0.83); // Alpine snow
+    return vec3(0.35, 0.41, 0.21); // Grasslands
 }
 
 int surface_bits(vec4 data) {
@@ -151,11 +161,31 @@ vec2 hex_uv(ivec2 hex) {
     return (map_position - hex_center(hex)) / vec2(ROOT3, 2.0) + vec2(0.5);
 }
 
+uint vegetation_hash(ivec2 hex) {
+    uvec2 cell = uvec2(data_offset(hex));
+    uint value = (cell.x * 0x9e3779b9u) ^ (cell.y * 0x85ebca6bu);
+    value = (value ^ (value >> 16u)) * 0x7feb352du;
+    value = (value ^ (value >> 15u)) * 0x846ca68bu;
+    return value ^ (value >> 16u);
+}
+
 vec3 ground_color(vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
     int water = water_type(data);
     int biome = biome_id(data);
-    int art = water != 0 ? 9 + water : (biome == 0 ? 1 : clamp(biome - 1, 0, 9));
-    vec4 texel = textureGrad(ground_art, vec3(clamp(hex_uv(hex), vec2(0.0), vec2(1.0)), float(art)), tile_dx, tile_dy);
+    int base_art = water != 0 ? 9 + water : (biome == 0 ? 1 : clamp(biome - 1, 0, 9));
+    int variant_a = int(vegetation_hash(hex) % uint(VARIANTS));
+    int variant_b = (variant_a + 1) % VARIANTS;
+
+    // Seamless dual-scale world-space ground sampling so hexes merge into a continuous painted canvas
+    const float scale_a = 3.2;
+    const float scale_b = 7.4;
+    vec2 world_uv = map_position / vec2(ROOT3, 2.0);
+    vec2 uv_a = fract(world_uv / scale_a);
+    vec2 uv_b = fract(world_uv / scale_b + vec2(0.37, 0.61));
+
+    vec4 tex_a = textureGrad(ground_art, vec3(uv_a, float(base_art * VARIANTS + variant_a)), tile_dx / scale_a, tile_dy / scale_a);
+    vec4 tex_b = textureGrad(ground_art, vec3(uv_b, float(base_art * VARIANTS + variant_b)), tile_dx / scale_b, tile_dy / scale_b);
+    vec4 texel = mix(tex_a, tex_b, 0.42);
     return mix(water != 0 ? OCEAN : biome_color(float(biome)), texel.rgb, texel.a);
 }
 
@@ -165,17 +195,24 @@ float shelf_distance(ivec2 hex) {
 }
 
 vec3 ocean_color(float distance_to_land, vec2 tile_dx, vec2 tile_dy) {
-    float shallow = 1.0 - smoothstep(0.06, 1.0, distance_to_land);
+    float shallow = 1.0 - smoothstep(0.05, 0.95, distance_to_land);
     float footprint = max(length(tile_dx), length(tile_dy));
-    shallow *= mix(1.0, 0.68, smoothstep(0.10, 0.38, footprint));
-    // A wave tile spans several hexes and is anchored to the map across shore and ocean.
-    const float repeat_size = 6.0;
-    vec2 uv = fract(map_position / vec2(ROOT3, 2.0) / repeat_size);
-    vec2 dx = tile_dx / repeat_size;
-    vec2 dy = tile_dy / repeat_size;
-    vec4 deep_color = textureGrad(ground_art, vec3(uv, DEEP_OCEAN_ART), dx, dy);
-    vec4 shallow_color = textureGrad(ground_art, vec3(uv, SHALLOW_OCEAN_ART), dx, dy);
-    return mix(mix(OCEAN, deep_color.rgb, deep_color.a), mix(SHALLOW, shallow_color.rgb, shallow_color.a), shallow);
+    shallow *= mix(1.0, 0.72, smoothstep(0.10, 0.38, footprint));
+
+    const float repeat_a = 5.5;
+    const float repeat_b = 12.0;
+    vec2 world_uv = map_position / vec2(ROOT3, 2.0);
+    vec2 uv_a = fract(world_uv / repeat_a);
+    vec2 uv_b = fract(world_uv / repeat_b + vec2(0.23, 0.47));
+
+    vec4 deep_a = textureGrad(ground_art, vec3(uv_a, float(DEEP_OCEAN_ART * VARIANTS)), tile_dx / repeat_a, tile_dy / repeat_a);
+    vec4 deep_b = textureGrad(ground_art, vec3(uv_b, float(DEEP_OCEAN_ART * VARIANTS + 1)), tile_dx / repeat_b, tile_dy / repeat_b);
+    vec4 shallow_a = textureGrad(ground_art, vec3(uv_a, float(SHALLOW_OCEAN_ART * VARIANTS)), tile_dx / repeat_a, tile_dy / repeat_a);
+    vec4 shallow_b = textureGrad(ground_art, vec3(uv_b, float(SHALLOW_OCEAN_ART * VARIANTS + 1)), tile_dx / repeat_b, tile_dy / repeat_b);
+
+    vec3 deep_col = mix(OCEAN, mix(deep_a.rgb, deep_b.rgb, 0.45), deep_a.a);
+    vec3 shallow_col = mix(SHALLOW, mix(shallow_a.rgb, shallow_b.rgb, 0.45), shallow_a.a);
+    return mix(deep_col, shallow_col, shallow);
 }
 
 int vegetation_index(int biome, int water) {
@@ -194,85 +231,134 @@ bool inside_art(vec2 uv) {
 }
 
 vec4 sample_overlay(sampler2DArray atlas, int art, vec2 uv, vec2 dx, vec2 dy, float minification, float last_mip) {
-    // A subpixel hex can contribute the average of its illustration without flickering across the map.
     if (minification >= 1.0) {
+        if (!inside_art(uv)) return vec4(0.0);
         return textureLod(atlas, vec3(0.5, 0.5, float(art)), last_mip);
     }
     vec4 texel = inside_art(uv) ? textureGrad(atlas, vec3(uv, float(art)), dx, dy) : vec4(0.0);
-    if (minification > 0.0) {
+    if (minification > 0.0 && inside_art(uv)) {
         vec4 average = textureLod(atlas, vec3(0.5, 0.5, float(art)), last_mip);
-        // Mix premultiplied colors here to keep the transparent margin from darkening an edge.
-        float opacity = mix(texel.a, average.a, minification);
-        vec3 color = mix(texel.rgb * texel.a, average.rgb * average.a, minification);
+        float opacity = mix(texel.a, average.a * texel.a, minification);
+        vec3 color = mix(texel.rgb * texel.a, average.rgb * opacity, minification);
         return vec4(color / max(opacity, 0.00001), opacity);
     }
     return texel;
 }
 
-uint vegetation_hash(ivec2 hex) {
-    uvec2 cell = uvec2(data_offset(hex));
-    uint value = (cell.x * 0x9e3779b9u) ^ (cell.y * 0x85ebca6bu);
-    value = (value ^ (value >> 16u)) * 0x7feb352du;
-    value = (value ^ (value >> 15u)) * 0x846ca68bu;
-    return value ^ (value >> 16u);
-}
-
-vec3 decorate(vec3 color, vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
+vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, vec2 tile_dy, float minification) {
+    ivec2 offset = data_offset(hex);
+    if (!inside(offset)) {
+        return color;
+    }
+    vec4 data = texelFetch(terrain_data, offset, 0);
     int surface = surface_bits(data);
     int relief = (surface >> 2) & 7;
     int water = surface & 3;
+    if ((surface & 192) == 0 && !is_current) {
+        return color;
+    }
+
     vec2 tile = hex_uv(hex);
-    float minification = smoothstep(0.25, 0.55, max(length(tile_dx), length(tile_dy)));
+    uint rank = vegetation_hash(hex);
     int detail = 0;
     if (show_details && minification < 1.0) {
-        detail = int(round(texelFetch(detail_data, to_offset(hex), 0).r * 255.0));
+        detail = int(round(texelFetch(detail_data, offset, 0).r * 255.0));
     }
-    int icon_art = (detail & 31) - 1;
+    int icon_base = (detail & 31) - 1;
     float close_reveal = smoothstep(0.43, 0.90, detail_zoom);
     float reveal = (detail & 32) != 0 ? close_reveal : 1.0;
     bool shared_hex = (detail & 32) != 0 ||
         (show_relief && show_vegetation && (surface & 192) == 192);
     float shared_layout = shared_hex ? smoothstep(0.30, 0.57, detail_zoom) : 0.0;
+
+    // 1. Continuous 2.5D Overlapping Mountain Ranges & Hills (Battle Brothers organic randomized massif layout)
     if (show_relief && (surface & 64) != 0) {
-        int art = (surface & 32) != 0 ? 4 : relief - 1;
-        vec2 anchor = mix(vec2(0.5), vec2(0.5, 0.274), detail_zoom);
-        vec2 size = mix(vec2(0.97, 0.84), vec2(0.54, 0.455), detail_zoom);
-        anchor = mix(anchor, vec2(0.5, 0.225), shared_layout);
-        size = mix(size, vec2(0.26, 0.24), shared_layout);
+        int base_relief = (surface & 32) != 0 ? 4 : relief - 1;
+        int variant = int(rank % uint(VARIANTS));
+        int art = base_relief * VARIANTS + variant;
+
+        vec2 rand2 = vec2(float(rank & 255u), float((rank >> 8u) & 255u)) / 127.5 - 1.0;
+        vec2 rand_scale = vec2(
+            mix(0.84, 1.28, float((rank >> 16u) & 255u) / 255.0),
+            mix(0.82, 1.26, float((rank >> 24u) & 255u) / 255.0));
+        float skew = (float((rank >> 12u) & 255u) / 127.5 - 1.0) * 0.18;
+
+        // Large vertical and horizontal jitter breaks the hexagonal row alignment completely
+        vec2 jitter = rand2 * vec2(0.32, 0.36);
+        vec2 anchor = mix(vec2(0.5, 0.46) + jitter, vec2(0.5, 0.44) + jitter * 0.9, detail_zoom);
+        vec2 size = mix(vec2(1.82, 1.56), vec2(1.66, 1.42), detail_zoom) * rand_scale;
+        anchor = mix(anchor, vec2(0.5, 0.34) + jitter * 0.45, shared_layout * 0.55);
+        size = mix(size, vec2(1.22, 1.06) * rand_scale, shared_layout * 0.55);
+
         vec2 uv = (tile - anchor) / size + vec2(0.5);
-        vec4 texel = sample_overlay(relief_art, art, uv, tile_dx / size, tile_dy / size, minification, 8.0);
-        color = mix(color, texel.rgb, texel.a);
-    }
-    if (show_vegetation && (surface & 128) != 0) {
-        int art = vegetation_index(biome_id(data), water);
-        if (art >= 0) {
-            vec2 anchor = mix(vec2(0.5), vec2(0.29, 0.35), detail_zoom);
-            vec2 size = mix(vec2(0.97, 0.84), vec2(0.32, 0.278), detail_zoom);
-            anchor = mix(anchor, vec2(0.245, 0.40), shared_layout);
-            size = mix(size, vec2(0.20, 0.21), shared_layout);
-            uint rank = vegetation_hash(hex);
-            vec2 offset = vec2(float(rank & 255u), float((rank >> 8u) & 255u)) / 127.5 - 1.0;
-            vec2 jitter = mix(vec2(0.061, 0.050), vec2(0.012, 0.019), shared_layout);
-            anchor += offset * jitter * smoothstep(0.15, 1.0, detail_zoom);
-            float scale = mix(0.88, 1.12, float((rank >> 16u) & 255u) / 255.0);
-            size *= mix(1.0, scale, mix(0.35, 1.0, detail_zoom));
-            vec2 projection = vec2((rank & 0x1000000u) == 0u ? -1.0 : 1.0, 1.0) / size;
-            vec2 uv = (tile - anchor) * projection + vec2(0.5);
-            vec4 texel = sample_overlay(vegetation_art, art, uv, tile_dx * projection, tile_dy * projection, minification, 7.0);
-            color = mix(color, texel.rgb, texel.a);
+        uv.x += (uv.y - 0.5) * skew;
+        if (inside_art(uv)) {
+            vec4 texel = sample_overlay(relief_art, art, uv, tile_dx / size, tile_dy / size, minification, 8.0);
+            float lum = dot(texel.rgb, vec3(0.299, 0.587, 0.114));
+            // Preserve crisp dark ink contours & cliff shadows (lum < 0.25) and bright white snow caps (lum > 0.78),
+            // while blending the grey stone/hill slopes semi-transparently with the underlying biome ground color!
+            float mid_slope = smoothstep(0.12, 0.34, lum) * (1.0 - smoothstep(0.74, 0.92, lum));
+            float biome_tint_strength = base_relief == 0 ? 0.76 : (base_relief == 1 ? 0.56 : (base_relief == 2 ? 0.40 : 0.26));
+            vec3 biome_shaded = color * (0.46 + 1.14 * lum);
+            vec3 relief_rgb = mix(texel.rgb, biome_shaded, mid_slope * biome_tint_strength);
+            color = mix(color, relief_rgb, texel.a);
         }
     }
-    if (icon_art >= 0 && reveal > 0.0) {
-        vec2 anchor = mix(vec2(0.64, 0.42), vec2(0.76, 0.40), detail_zoom);
-        vec2 size = mix(vec2(0.51, 0.40), vec2(0.32, 0.28), detail_zoom);
+
+    // 2. Dense Overlapping 2.5D Battle Brothers Forests & Scrub (randomized position breaks hex rows)
+    if (show_vegetation && (surface & 128) != 0) {
+        int base_veg = vegetation_index(biome_id(data), water);
+        if (base_veg >= 0) {
+            int variant = int((rank >> 2u) % uint(VARIANTS));
+            int art = base_veg * VARIANTS + variant;
+
+            vec2 anchor = mix(vec2(0.5, 0.48), vec2(0.48, 0.46), detail_zoom);
+            vec2 size = mix(vec2(1.42, 1.24), vec2(1.24, 1.08), detail_zoom);
+            anchor = mix(anchor, vec2(0.32, 0.46), shared_layout * 0.65);
+            size = mix(size, vec2(0.88, 0.78), shared_layout * 0.65);
+
+            vec2 offset_vec = vec2(float(rank & 255u), float((rank >> 8u) & 255u)) / 127.5 - 1.0;
+            vec2 jitter = mix(vec2(0.28, 0.32), vec2(0.10, 0.10), shared_layout);
+            anchor += offset_vec * jitter;
+            float scale = mix(0.88, 1.18, float((rank >> 16u) & 255u) / 255.0);
+            size *= scale;
+            vec2 projection = vec2((rank & 0x1000000u) == 0u ? -1.0 : 1.0, 1.0) / size;
+            vec2 uv = (tile - anchor) * projection + vec2(0.5);
+            if (inside_art(uv)) {
+                vec4 texel = sample_overlay(vegetation_art, art, uv, tile_dx * projection, tile_dy * projection, minification, 8.0);
+                color = mix(color, texel.rgb, texel.a);
+            }
+        }
+    }
+
+    // 3. Hand-Painted Low-Fantasy Detail Icons (3 variants per icon)
+    if (is_current && icon_base >= 0 && reveal > 0.0) {
+        int icon_variant = int((rank >> 5u) % uint(VARIANTS));
+        int icon_art = icon_base * VARIANTS + icon_variant;
+        vec2 anchor = mix(vec2(0.56, 0.48), vec2(0.70, 0.48), detail_zoom * shared_layout);
+        vec2 size = mix(vec2(0.68, 0.56), vec2(0.52, 0.44), detail_zoom);
         if ((surface & 0xc0) != 0) {
-            size = mix(size, vec2(0.25, 0.22), shared_layout);
+            size = mix(size, vec2(0.42, 0.36), shared_layout);
         }
         vec2 uv = (tile - anchor) / size + vec2(0.5);
         if (inside_art(uv)) {
             vec4 icon = textureGrad(detail_art, vec3(uv, float(icon_art)), tile_dx / size, tile_dy / size);
             color = mix(color, icon.rgb, icon.a * reveal * (1.0 - minification));
         }
+    }
+    return color;
+}
+
+vec3 decorate(vec3 color, vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
+    float minification = smoothstep(0.42, 0.88, max(length(tile_dx), length(tile_dy)));
+    if (minification >= 0.999) {
+        return decorate_single_hex(color, hex, true, tile_dx, tile_dy, minification);
+    }
+    // Render 11-hex neighborhood in 2.5D back-to-front painter's order so mountains and forests overlap across hex borders
+    for (int i = 0; i < 11; i++) {
+        ivec2 offset_hex = PAINTER_HEXES[i];
+        bool is_current = (i == 5);
+        color = decorate_single_hex(color, hex + offset_hex, is_current, tile_dx, tile_dy, minification);
     }
     return color;
 }
@@ -299,8 +385,6 @@ float coast_noise(vec2 position, float frequency) {
 }
 
 float quadratic_boundary(vec3 ordered, float endpoint) {
-    // Endpoints lie on the mixed edges. The control point sits on both edge normals
-    // so adjacent quadratics share the tangent at their crossings.
     float control = (4.0 * endpoint - 1.0) / 3.0;
     float t = clamp(0.5 + 0.5 * (ordered.z - ordered.y) / (1.0 - endpoint), 0.0, 1.0);
     return mix(endpoint, control, 2.0 * t * (1.0 - t));
@@ -316,7 +400,6 @@ float curved_shore(vec3 weights, ivec3 types, float edge) {
 }
 
 float curved_biome_share(vec3 weights) {
-    // Along a shared edge the correction vanishes, including at the mouth of a three-biome junction.
     float interior = smoothstep(0.0, 0.19, min(weights.y, weights.z));
     float present = smoothstep(0.0, 0.19, weights.x);
     float bend = 0.5 - quadratic_boundary(weights, 0.5);
@@ -392,7 +475,6 @@ vec3 terrain_color(vec2 axial, vec4 current, ivec2 current_hex, vec2 tile_dx, ve
     vec3 art_b = dry_weights.y > 0.0 ? ground_color(b, hex_b, tile_dx, tile_dy) : vec3(0.0);
     vec3 art_c = dry_weights.z > 0.0 ? ground_color(c, hex_c, tile_dx, tile_dy) : vec3(0.0);
     if (blend_biomes) {
-        // Work with total weight per biome so a triangle's zero-weight vertex cannot change its edge.
         vec3 same = vec3(float(ids.x == ids.y), float(ids.x == ids.z), float(ids.y == ids.z));
         vec3 biome_weights = dry_weights + vec3(
             dot(dry_weights.yz, same.xy),
@@ -405,17 +487,19 @@ vec3 terrain_color(vec2 axial, vec4 current, ivec2 current_hex, vec2 tile_dx, ve
         curved += 4.0 * share * (1.0 - share) * shift;
         float width = clamp(0.38 + noise.x * 0.13 + footprint * 0.10, 0.24, 0.49);
         vec3 feather = smoothstep(vec3(0.5 - width), vec3(0.5 + width), curved);
-        // Keep a nonzero contribution at junctions where three or more edges meet.
         dry_weights *= max(feather, share * 0.05) / max(share, vec3(0.00001));
     }
     vec3 land = (art_a * dry_weights.x + art_b * dry_weights.y + art_c * dry_weights.z)
         / max(dot(dry_weights, vec3(1.0)), 0.00001);
-    land *= mix(0.96, 1.07, smoothstep(0.0, 4200.0, elevation));
+
+    // Topographic directional hillshading from elevation gradients + altitude brightness
+    float slope_light = clamp(((heights.x - heights.y) * (upper ? -0.6 : 0.6) + (heights.x - heights.z) * (upper ? -0.5 : 0.5)) * 0.00018, -0.10, 0.10);
+    land *= mix(0.93, 1.09, smoothstep(0.0, 4200.0, elevation)) + slope_light;
     if (!shore) {
         return land;
     }
 
-    // Extend the same land material into the coastal strip, then fade it into the water.
+    // Battle Brothers coastal transition: sandy-pebble beach bank & dark wet-shore rim
     float crowding = dot(weights, vec3(shore_crowding(a), shore_crowding(b), shore_crowding(c)));
     float tight = smoothstep(0.13, 0.68, crowding);
     float feather = clamp(0.025 + footprint * 0.40, 0.025, 0.11);
@@ -427,7 +511,14 @@ vec3 terrain_color(vec2 axial, vec4 current, ivec2 current_hex, vec2 tile_dx, ve
     float bend = clamp(0.32 + 0.30 * noise.x - 0.23 * contour, 0.04, 0.76);
     float curve = mix(land_fraction - edge, curved_shore(weights, types, edge), bend);
     float strip = smoothstep(-feather, feather, curve);
-    return mix(water, land, strip);
+
+    // Warm sandy-pebble shoreline bank right along the land-water interface (like Battle Brothers Image 5)
+    float sand_band = exp(-pow((curve - 0.035) / max(0.065, feather * 1.6), 2.0));
+    float dark_rim = exp(-pow((curve + 0.015) / max(0.032, feather * 0.9), 2.0));
+    vec3 shore_sand = vec3(0.73, 0.68, 0.53) * (0.94 + 0.08 * contour);
+    vec3 rimmed_land = mix(land, shore_sand, sand_band * 0.68);
+    vec3 rimmed_water = water * (1.0 - dark_rim * 0.24);
+    return mix(rimmed_water, rimmed_land, strip);
 }
 
 void fragment() {
@@ -439,7 +530,7 @@ void fragment() {
     vec2 axial = vec2(map_position.x / ROOT3 - r * 0.5, r);
     ivec2 hex = nearest_hex(axial);
     ivec2 offset = to_offset(hex);
-    vec3 color = vec3(0.038, 0.068, 0.083);
+    vec3 color = vec3(0.055, 0.047, 0.038);
 
     if (inside(offset)) {
         if (editor_preview && layer != 2 && layer != 3) {
@@ -452,9 +543,9 @@ void fragment() {
             float elevation = unpack16(data.rg) - 32768.0;
             if (layer == 5) {
                 color = locks == 2 ? vec3(0.69, 0.31, 0.37)
-                    : locks == 1 ? vec3(0.72, 0.53, 0.24) : vec3(0.14, 0.22, 0.24);
+                    : locks == 1 ? vec3(0.72, 0.53, 0.24) : vec3(0.18, 0.16, 0.13);
             } else if (stage == 0) {
-                color = vec3(0.095, 0.15, 0.17);
+                color = vec3(0.14, 0.12, 0.10);
             } else if (layer == 1) {
                 color = mix(vec3(0.09, 0.14, 0.22), vec3(0.96, 0.87, 0.62),
                     clamp((elevation + 2400.0) / 6800.0, 0.0, 1.0));
@@ -464,10 +555,10 @@ void fragment() {
                     color *= 0.83 + float(relief) * 0.095 + clamp(elevation * 0.00008, -0.12, 0.18);
                 }
             } else {
-                color = water == 3 ? vec3(0.25, 0.41, 0.32) : water == 2 ? vec3(0.19, 0.38, 0.49) : OCEAN;
+                color = water == 3 ? vec3(0.28, 0.29, 0.19) : water == 2 ? vec3(0.16, 0.29, 0.31) : OCEAN;
             }
         } else if (stage == 0 && layer != 5) {
-            color = vec3(0.095, 0.15, 0.17);
+            color = vec3(0.14, 0.12, 0.10);
         } else if (layer == 0) {
             vec4 data = sample_terrain(hex);
             color = decorate(terrain_color(axial, data, hex, tile_dx, tile_dy), data, hex, tile_dx, tile_dy);
@@ -485,7 +576,7 @@ void fragment() {
         } else {
             float locks = round(texelFetch(lock_data, offset, 0).r * 255.0);
             color = locks >= 2.0 ? vec3(0.69, 0.31, 0.37)
-                : locks >= 1.0 ? vec3(0.72, 0.53, 0.24) : vec3(0.14, 0.22, 0.24);
+                : locks >= 1.0 ? vec3(0.72, 0.53, 0.24) : vec3(0.18, 0.16, 0.13);
         }
 
         vec2 local = abs(map_position - hex_center(hex));
@@ -494,7 +585,7 @@ void fragment() {
         float edge = 1.0 - smoothstep(0.0, units_per_pixel * 1.3, edge_distance);
         if (show_grid) {
             float visibility = 1.0 - smoothstep(0.13, 0.35, units_per_pixel);
-            color = mix(color, vec3(0.05, 0.12, 0.14), 0.6 * edge * visibility);
+            color = mix(color, vec3(0.09, 0.08, 0.06), 0.55 * edge * visibility);
         }
         bool selected = within_selection(offset);
         float brush_distance_at_hex = brush_center.x >= 0 ? distance_to_brush(hex) : float(brush_radius) + 1.0;
@@ -516,11 +607,11 @@ void fragment() {
                 }
             }
             if (selected) {
-                color = mix(color, vec3(1.0, 0.84, 0.45), 0.22 + 0.78 * selection_edge);
+                color = mix(color, vec3(0.92, 0.75, 0.38), 0.22 + 0.78 * selection_edge);
             }
             if (brushed) {
                 float weight = mix(1.0, brush_strength, brush_distance_at_hex / float(max(brush_radius, 1)));
-                color = mix(color, vec3(0.78, 0.98, 0.92), 0.22 * weight + 0.68 * brush_edge);
+                color = mix(color, vec3(0.86, 0.78, 0.52), 0.22 * weight + 0.68 * brush_edge);
             }
         }
     }

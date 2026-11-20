@@ -8,8 +8,8 @@ public partial class MapView : Node2D
 {
     private static readonly string[] Layers =
         { "Terreno", "Elevação", "Temperatura", "Chuva", "Biomas", "Locks", "Tectônica" };
-    private static readonly Color Ink = new("#f0efdf");
-    private static readonly Color Muted = new("#a9beb9");
+    private static readonly Color Ink = new("#ebe2cc");
+    private static readonly Color Muted = new("#a89b84");
     private Node2D _map = null!;
     private Polygon2D _mapClip = null!;
     private Polygon2D _surface = null!;
@@ -45,7 +45,20 @@ public partial class MapView : Node2D
         GetTree().AutoAcceptQuit = false;
 
         string[] args = OS.GetCmdlineUserArgs();
-        if (Array.IndexOf(args, "--gentle-ridge-review") >= 0)
+        string? benchmarkSize = Array.Find(args, arg => arg.StartsWith("--benchmark-size="));
+        if (benchmarkSize is not null)
+            Callable.From(() => RunSizeBenchmark(int.Parse(benchmarkSize.Split('=')[1]))).CallDeferred();
+        else if (Array.IndexOf(args, "--climate-relief-review") >= 0)
+            Callable.From(RunClimateReliefReview).CallDeferred();
+        else if (Array.IndexOf(args, "--validate-regions-current") >= 0)
+            Callable.From(() => RunV29RegionalValidation(WorldGenerator.Version)).CallDeferred();
+        else if (Array.IndexOf(args, "--validate-editor-current") >= 0)
+            Callable.From(() => RunV29EditorValidation(WorldGenerator.Version)).CallDeferred();
+        else if (Array.IndexOf(args, "--validate-regions-v29") >= 0)
+            Callable.From(() => RunV29RegionalValidation()).CallDeferred();
+        else if (Array.IndexOf(args, "--validate-editor-v29") >= 0)
+            Callable.From(() => RunV29EditorValidation()).CallDeferred();
+        else if (Array.IndexOf(args, "--gentle-ridge-review") >= 0)
             Callable.From(RunGentleRidgeReview).CallDeferred();
         else if (Array.IndexOf(args, "--restored-ridge-review") >= 0)
             Callable.From(RunRestoredRidgeReview).CallDeferred();
@@ -318,11 +331,11 @@ public partial class MapView : Node2D
 
     private static StyleBoxFlat BarStyle(float horizontal, float vertical) => new()
     {
-        BgColor = new Color("#14252b"),
-        BorderColor = new Color("#344e52"),
+        BgColor = new Color("#1c1712"),
+        BorderColor = new Color("#5e4c36"),
         BorderWidthTop = 1, BorderWidthBottom = 1, BorderWidthLeft = 1, BorderWidthRight = 1,
-        CornerRadiusTopLeft = 10, CornerRadiusTopRight = 10,
-        CornerRadiusBottomLeft = 10, CornerRadiusBottomRight = 10,
+        CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6,
+        CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6,
         ContentMarginLeft = horizontal, ContentMarginRight = horizontal,
         ContentMarginTop = vertical, ContentMarginBottom = vertical
     };

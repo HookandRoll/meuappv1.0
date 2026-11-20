@@ -121,32 +121,25 @@ internal sealed class GlobalDataTextures : IDisposable
 
     private static void MarkReliefSymbols(WorldData world, byte[] terrain)
     {
-        const int spacing = 5;
-        for (int rowStart = 0; rowStart < world.Height; rowStart += spacing)
-        for (int columnStart = 0; columnStart < world.Width; columnStart += spacing)
+        for (int cell = 0; cell < world.Count; cell++)
         {
-            bool drawRolling = (StableRank(rowStart * world.Width + columnStart) & 1u) == 0;
-            int bestCell = -1;
-            int bestScore = -1;
-            for (int row = rowStart; row < Math.Min(rowStart + spacing, world.Height); row++)
-            for (int column = columnStart; column < Math.Min(columnStart + spacing, world.Width); column++)
-            {
-                int cell = row * world.Width + column;
-                ReliefType relief = world.Relief[cell];
-                if (world.Water[cell] != WaterType.None || relief is <= ReliefType.Flat or > ReliefType.Peak ||
-                    (relief == ReliefType.Rolling && !drawRolling))
-                    continue;
+            if (world.Water[cell] != WaterType.None)
+                continue;
+            ReliefType relief = world.Relief[cell];
+            if (relief is <= ReliefType.Flat or > ReliefType.Peak)
+                continue;
 
-                int score = (int)relief * 2048 + Math.Max(0, (int)world.Elevation[cell]) / 32
-                    + (int)(StableRank(cell) & 511u);
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    bestCell = cell;
-                }
-            }
-            if (bestCell >= 0)
-                terrain[bestCell * 4 + 3] |= 1 << 6;
+            uint rank = StableRank(cell ^ world.Manifest.Seed);
+            bool place = relief switch
+            {
+                ReliefType.Peak => (rank % 5u) < 3u,       // ~60% large overlapping high peaks
+                ReliefType.Mountains => (rank % 9u) < 5u,  // ~56% bold overlapping mountain ridges
+                ReliefType.Hills => (rank % 5u) < 2u,      // ~40% clustered rocky hills
+                ReliefType.Rolling => (rank % 7u) == 0u,   // ~14% rolling downs
+                _ => false
+            };
+            if (place)
+                terrain[cell * 4 + 3] |= 1 << 6;
         }
     }
 
@@ -170,12 +163,12 @@ internal sealed class GlobalDataTextures : IDisposable
                 BiomeType biome = world.Biomes[cell];
                 float habitat = (water, biome) switch
                 {
-                    (WaterType.None, BiomeType.TemperateForest) => 0.53f,
-                    (WaterType.None, BiomeType.Rainforest) => 0.62f,
-                    (WaterType.None, BiomeType.Taiga) => 0.43f,
-                    (WaterType.None, BiomeType.Savanna) => 0.20f,
-                    (WaterType.None, BiomeType.Desert) => 0.09f,
-                    (WaterType.Wetland, _) => 0.35f,
+                    (WaterType.None, BiomeType.TemperateForest) => 0.84f,
+                    (WaterType.None, BiomeType.Rainforest) => 0.88f,
+                    (WaterType.None, BiomeType.Taiga) => 0.82f,
+                    (WaterType.None, BiomeType.Savanna) => 0.30f,
+                    (WaterType.None, BiomeType.Desert) => 0.14f,
+                    (WaterType.Wetland, _) => 0.46f,
                     _ => 0f
                 };
                 if (habitat == 0f)
@@ -185,10 +178,10 @@ internal sealed class GlobalDataTextures : IDisposable
                 float field = 0.53f * WorldGenerator.TerrainNoise(x, y, height / 29f, aspect, wrap, (uint)seed ^ 0x5297A4D1u)
                     + 0.31f * WorldGenerator.TerrainNoise(x, y, height / 11f, aspect, wrap, (uint)seed ^ 0x68E31DA4u)
                     + 0.16f * WorldGenerator.TerrainNoise(x, y, height / 4.3f, aspect, wrap, (uint)seed ^ 0x1B56C4E9u);
-                float canopy = Math.Clamp((field - 0.24f) / 0.53f, 0f, 1f);
+                float canopy = Math.Clamp((field - 0.18f) / 0.52f, 0f, 1f);
                 canopy *= canopy * (3f - 2f * canopy);
                 float depth = VegetationInterior(world, HexGrid.FromOffset(col, row), water, biome);
-                float chance = habitat * (0.11f + 0.89f * canopy) * (0.44f + 0.56f * depth);
+                float chance = habitat * (0.45f + 0.55f * canopy) * (0.58f + 0.42f * depth);
                 uint rank = StableRank(cell ^ seed ^ 0x517CC1B7);
                 if ((rank >> 8) * (1f / 16777216f) < chance)
                     terrain[cell * 4 + 3] |= 1 << 7;

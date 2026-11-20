@@ -106,10 +106,13 @@ void fragment() {
     float bend = clamp(0.32 + 0.30 * noise.x - 0.23 * contour, 0.04, 0.76);
     float curve = mix(land_fraction - edge, curved_shore(weights, types, edge), bend);
     float land = land_fraction > 0.999 ? 1.0 : land_fraction < 0.001 ? 0.0 : smoothstep(-feather, feather, curve);
-    float bank = smoothstep(0.0, 0.15, UV.x) * (1.0 - smoothstep(0.85, 1.0, UV.x));
+    float bank = smoothstep(0.0, 0.18, UV.x) * (1.0 - smoothstep(0.82, 1.0, UV.x));
+    float inner_water = smoothstep(0.14, 0.34, UV.x) * (1.0 - smoothstep(0.66, 0.86, UV.x));
     float ripple = sin(UV.y * 7.0 - TIME * 1.2) * 0.5 + 0.5;
     float size = smoothstep(0.04, 1.0, COLOR.r);
-    vec3 water = mix(vec3(0.33, 0.56, 0.69), vec3(0.08, 0.25, 0.41), size);
-    water *= 0.98 + ripple * 0.035;
-    COLOR = vec4(water, bank * land);
+    vec3 water_col = mix(vec3(0.21, 0.36, 0.38), vec3(0.11, 0.22, 0.26), size);
+    water_col *= 0.96 + ripple * 0.04;
+    vec3 bank_col = vec3(0.24, 0.22, 0.14);
+    vec3 final_river = mix(bank_col, water_col, inner_water);
+    COLOR = vec4(final_river, bank * land);
 }

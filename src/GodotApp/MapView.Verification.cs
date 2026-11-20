@@ -36,6 +36,7 @@ public partial class MapView
             WorldData original = WorldGenerator.Create(manifest);
             VerifyBiomes(original);
             VerifyDetailIcons(original);
+            VerifyArtworkResources();
             VerifyOceanShelf();
             VerifyRegionalGeneration();
             VerifyNaturalGeneration();
@@ -145,6 +146,7 @@ public partial class MapView
             VerifyIslandChannels();
             await VerifyEditing(path);
             await VerifyEditing(path, 18);
+            await VerifyEditing(path, WorldGenerator.Version);
             if (DisplayServer.GetName() != "headless" && OS.GetCmdlineUserArgs().Contains("--measure-editor"))
                 await MeasureEditorPreview(loaded);
             GD.Print($"Smoke test passed. 524288 hexes, save/load {seconds:F3} s; regional seams, continental sculpture and M3 editing verified.");
@@ -178,10 +180,13 @@ public partial class MapView
             int width = large ? 4096 : 1024;
             var timer = Stopwatch.StartNew();
             TerrainAlgorithm algorithm = sculpt ? TerrainAlgorithm.ContinentalSculpt : TerrainAlgorithm.Fractal;
-            WorldManifest manifest = TestManifest(width, width / 2, algorithm);
+            WorldManifest manifest = TestManifest(width, width / 2, algorithm) with { GeneratorVersion = WorldGenerator.Version };
             if (sculpt)
                 manifest = manifest with { Generation = manifest.Generation with { Continents = 4, LandPercent = 50 } };
+            long baselineManaged = GC.GetTotalMemory(true);
             var world = await Task.Run(() => WorldGenerator.Create(manifest));
+            double generationSeconds = timer.Elapsed.TotalSeconds;
+            long mapManagedBytes = GC.GetTotalMemory(true) - baselineManaged;
             int shared = -1;
             if (sculpt && !large)
             {
@@ -291,6 +296,21 @@ public partial class MapView
             await NextDraw();
             double upload = timer.Elapsed.TotalMilliseconds;
             GD.Print($"{world.Width}x{world.Height}: setup {setup:F2} s, {fps:F1} FPS moving, slowest layer {slowestLayer:F2} ms, full upload {upload:F2} ms (through frame submission).");
+            GD.Print($"BENCH v{manifest.GeneratorVersion}: generation={generationSeconds:F3}s, retained map managed={mapManagedBytes / 1048576.0:F2} MiB, process working set={Process.GetCurrentProcess().WorkingSet64 / 1048576.0:F2} MiB, rivers={WorldGenerator.ReadRivers(world).Length}");
+            if (!large)
+            {
+                Require(generationSeconds < 60 && mapManagedBytes < 200L * 1024 * 1024, "Geração ou memória excedeu o gate em 1024x512.");
+                await MeasureEditorPreview(world);
+                CancelEditorDraft();
+            }
+            Directory.CreateDirectory("results/validation-v29");
+            File.WriteAllText("results/validation-v29/benchmark.json", JsonSerializer.Serialize(new
+            {
+                manifest.GeneratorVersion, world.Width, world.Height, manifest.Seed, manifest.Generation,
+                generationSeconds, setupSeconds = setup, movingFps = fps, slowestLayerMs = slowestLayer,
+                fullUploadMs = upload, mapManagedBytes, processWorkingSetBytes = Process.GetCurrentProcess().WorkingSet64,
+                rivers = WorldGenerator.ReadRivers(world).Length
+            }, new JsonSerializerOptions { WriteIndented = true }));
             if (large)
             {
                 byte[]? preview = CapturePreview();
@@ -344,7 +364,7 @@ public partial class MapView
                 if (IsOpenPlain(world, i))
                     plains++;
             }
-            int score = Math.Min(forest, plains) * 5 + Math.Min(hills, mountain) + Math.Min(forest, 25);
+            int score = Math.Min(forest, plains) * 3 + Math.Min(hills, mountain) * 8 + Math.Min(mountain, 15) * 4 + Math.Min(forest, 20);
             if (score <= bestScore)
                 continue;
             best = new Vector2I(column, row);
@@ -1009,7 +1029,10 @@ public partial class MapView
     private void Screenshot(string filename)
     {
         using Image screenshot = GetViewport().GetTexture().GetImage();
-        Require(screenshot.SavePng($"res://.godot/{filename}") == Error.Ok, "Falha ao capturar a tela.");
+        string directory = OS.HasFeature("editor") ? ProjectSettings.GlobalizePath("res://.godot")
+            : Path.Combine(OS.GetExecutablePath().GetBaseDir(), ".godot");
+        Directory.CreateDirectory(directory);
+        Require(screenshot.SavePng(Path.Combine(directory, filename)) == Error.Ok, "Falha ao capturar a tela.");
     }
 
     private static void Require(bool result, string detail)

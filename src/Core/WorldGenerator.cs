@@ -9,7 +9,7 @@ public readonly record struct GenerationProgress(GenerationStep Step, int Percen
 
 public static partial class WorldGenerator
 {
-    public const int Version = 29;
+    public const int Version = 30;
     internal const short SculptedStraitDepth = -137;
     private const int HistogramSize = 2048;
     // Two forest growth passes read up to two hexes away each. Cleanup reads one more.
@@ -164,6 +164,18 @@ public static partial class WorldGenerator
 
         bool terrain = settings.Stage == GenerationStage.Terrain;
         bool[] openPlains = terrain ? new bool[area.Count] : Array.Empty<bool>();
+        short[]? gentleElevation = manifest.GeneratorVersion >= 30
+            ? BuildGentleElevation(world.Width, world.Height, manifest.HorizontalWrap,
+                cell => water?[cell] ?? (ScoreAt(cell % world.Width, cell / world.Width) < seaLevel ? WaterType.Ocean : WaterType.None),
+                cell =>
+                {
+                    int x = cell % world.Width, y = cell / world.Width;
+                    float altitude = ScoreAt(x, y) - seaLevel;
+                    WaterType type = water?[cell] ?? (altitude < 0 ? WaterType.Ocean : WaterType.None);
+                    return type != WaterType.None ? (short)Math.Min(-1, Math.Clamp(altitude * 2500, -6000f, 0f))
+                        : LandElevation((float)x / world.Width, (float)y / world.Height, aspect, altitude,
+                            seed, ridges?[cell], reliefDensity).Elevation;
+                }) : null;
         progress?.Invoke(new(GenerationStep.Elevation, 0));
         VisitChunks(area.Chunks, (i, col, row) =>
         {
@@ -184,6 +196,7 @@ public static partial class WorldGenerator
             }
 
             int cell = row * world.Width + col;
+            if (gentleElevation is not null) elevation = gentleElevation[cell];
             area.Elevation[i] = area.Writes(col, row, cell, HexLocks.Elevation) ? elevation : world.Elevation[cell];
             area.Relief[i] = !area.Writes(col, row, cell, HexLocks.Relief) ? world.Relief[cell] : area.Elevation[i] switch
             {
@@ -191,7 +204,7 @@ public static partial class WorldGenerator
                 >= 650 => ReliefType.Hills, >= 220 => ReliefType.Rolling, _ => ReliefType.Flat
             };
             if (terrain)
-                openPlains[i] = plain >= 0.73f && area.Relief[i] == ReliefType.Flat;
+                openPlains[i] = manifest.GeneratorVersion < 30 && plain >= 0.73f && area.Relief[i] == ReliefType.Flat;
         }, progress, GenerationStep.Elevation, 0, 90);
         RebuildCoast(area, progress, GenerationStep.Elevation, 90);
         if (!terrain)
@@ -232,7 +245,9 @@ public static partial class WorldGenerator
         WaterType ClimateWater(int x, int y) => area.Writes(x, y, y * world.Width + x, HexLocks.Water)
             ? water?[y * world.Width + x] ?? WaterType.None : world.Water[y * world.Width + x];
         progress?.Invoke(new(GenerationStep.Climate, 0));
-        ushort[]? moisture = manifest.GeneratorVersion >= 25 && sculpt
+        var regionalRain = manifest.GeneratorVersion >= 30
+            ? BuildRegionalRain(world, area, ClimateElevation, ClimateWater, seed) : null;
+        ushort[]? moisture = manifest.GeneratorVersion is >= 25 and < 30 && sculpt
             ? BuildOrographicMoisture(world, area, ClimateElevation, ClimateWater) : null;
         VisitChunks(area.Chunks, (i, col, row) =>
         {
@@ -240,9 +255,11 @@ public static partial class WorldGenerator
             row = area.WorldRow(row);
             float maritime = area.Water[i] == WaterType.Ocean ? 1f
                 : SeaExposure(maritimeScore, seaLevel, world.Width, world.Height, col, row, climateRadius, sculpt && manifest.HorizontalWrap);
+            if (regionalRain is not null) maritime = regionalRain.Moisture[i] / 65535f;
             var (temperature, rainfall) = Climate((float)col / world.Width, (float)row / world.Height,
                 aspect, area.Elevation[i], maritime, seed);
-            if (moisture is not null)
+            if (regionalRain is not null) rainfall = regionalRain.Rain[i];
+            else if (moisture is not null)
             {
                 int wind = ClimateWind(row, world.Height);
                 int upwind = col - wind;
@@ -282,7 +299,14 @@ public static partial class WorldGenerator
             }
             if (refineBiomeEdges)
                 (elevation, temperature, rainfall) = BiomeClimateAt(area, i, col, row);
-            if (variedTerrain)
+            if (manifest.GeneratorVersion >= 30)
+            {
+                float x = (area.WorldColumn(col) + (area.WorldRow(row) & 1) * 0.5f) / world.Height;
+                float y = area.WorldRow(row) / (float)world.Height;
+                rainfall = (ushort)Math.Max(0, rainfall + (int)((TerrainNoise(x, y, 4.0f, aspect,
+                    manifest.HorizontalWrap, seed ^ 0xB82F1E49u) - 0.5f) * 90f));
+            }
+            else if (variedTerrain)
             {
                 float x = (area.WorldColumn(col) + (area.WorldRow(row) & 1) * 0.5f) / world.Height;
                 float y = area.WorldRow(row) / (float)world.Height;

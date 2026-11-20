@@ -508,7 +508,7 @@ public partial class MapView
         Array.Fill(desert.Rainfall, (ushort)100);
         WorldGenerator.GenerateRivers(desert);
         Require(WorldGenerator.ReadRivers(desert).Length == 0, "Deserto uniforme criou rede perene de riachos.");
-        foreach (int version in new[] { 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29 })
+        foreach (int version in new[] { 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30 })
         foreach (int seed in new[] { 1234, 1, -77 })
         foreach (int land in new[] { 30, 40, 50 })
         foreach (bool wrap in new[] { false, true })
