@@ -92,8 +92,9 @@ public static partial class WorldGenerator
 
     // The regional baseline deliberately has no elevation input. Topography only
     // modulates moisture transport and bounded windward enhancement afterward.
-    internal static ushort RegionalRainBaseline(float x, float y, float aspect, float maritime, uint seed, bool wrap)
+    internal static ushort RegionalRainBaseline(float x, float y, float aspect, float maritime, uint seed, bool wrap, int version = 0)
     {
+        if (version >= 43) return ModernRainBaseline(x, y, aspect, maritime, seed, wrap);
         float latitude = Math.Abs(y - 0.5f) * 2;
         float equator = 1 - Smooth(Math.Clamp(latitude / 0.52f, 0, 1));
         float temperate = Smooth(Math.Max(0, 1 - Math.Abs(latitude - 0.65f) / 0.28f));
@@ -123,8 +124,9 @@ public static partial class WorldGenerator
                 sum += heights[X(x + radius + 1)] - heights[X(x - radius)];
             }
             float length = Math.Max(8, world.Height / 12f);
-            TransportMoistureRow(smooth, surface, east, width, world.Manifest.HorizontalWrap, 1, length);
-            TransportMoistureRow(smooth, surface, west, width, world.Manifest.HorizontalWrap, -1, length);
+            bool modern = world.Manifest.GeneratorVersion >= 43;
+            TransportMoistureRow(smooth, surface, east, width, world.Manifest.HorizontalWrap, 1, length, modern);
+            TransportMoistureRow(smooth, surface, west, width, world.Manifest.HorizontalWrap, -1, length, modern);
             float latitude = Math.Abs(2f * row / world.Height - 1);
             float westerly = Smooth(Math.Clamp((latitude - 0.25f) / 0.12f, 0, 1))
                 * (1 - Smooth(Math.Clamp((latitude - 0.65f) / 0.12f, 0, 1)));
@@ -134,9 +136,17 @@ public static partial class WorldGenerator
                 float humidity = Interpolate(west[x], east[x], westerly) / 65535f;
                 float ascent = Interpolate(Math.Max(0, smooth[x] - smooth[X(x + 1)]), Math.Max(0, smooth[x] - smooth[X(x - 1)]), westerly);
                 ushort baseline = RegionalRainBaseline(x / (float)width, row / (float)world.Height,
-                    width / (float)world.Height, humidity, seed, world.Manifest.HorizontalWrap);
-                float enhancement = humidity * (1 - MathF.Exp(-ascent / 1800f)) * 400;
-                result.Rain[i] = (ushort)Math.Clamp(MathF.Round(baseline * (0.75f + 0.40f * humidity) + enhancement), 0, 5000);
+                    width / (float)world.Height, humidity, seed, world.Manifest.HorizontalWrap, world.Manifest.GeneratorVersion);
+                float enhancement = humidity * (1 - MathF.Exp(-ascent / (modern ? 1400f : 1800f))) * (modern ? 750 : 400);
+                float rain = baseline * (modern ? 0.35f + 0.85f * humidity : 0.75f + 0.40f * humidity) + enhancement;
+                if (modern)
+                {
+                    float temperature = ModernTemperature(x / (float)width, row / (float)world.Height,
+                        width / (float)world.Height, heights[x], humidity, seed, world.Manifest.HorizontalWrap);
+                    float cold = Smooth(Math.Clamp((temperature + 180f) / 260f, 0.18f, 1));
+                    rain *= cold;
+                }
+                result.Rain[i] = (ushort)Math.Clamp(MathF.Round(rain), 0, 5000);
                 result.Moisture[i] = (ushort)Math.Clamp(MathF.Round(humidity * 65535), 0, 65535);
             }
         });

@@ -1,8 +1,8 @@
 # Jota Fantasy Map Maker
 
-**Alpha 1.1.31** · Mapas de fantasia para RPG, com editor de terreno, tectônica, clima e rios no Godot 4 .NET.
+**Alpha 1.1.32** · Mapas de fantasia para RPG, com editor de terreno, tectônica, clima e rios no Godot 4 .NET.
 
-Executável portátil para Windows x64 e histórico de mudanças na [release Alpha 1.1.31](https://github.com/HookandRoll/meuappv1.0/releases/tag/v1.1.31-alpha). Veja [todas as mudanças desde a Alpha 1.1.30](RELEASE_NOTES.md).
+Executável portátil para Windows x64 e histórico de mudanças na [release Alpha 1.1.32](https://github.com/HookandRoll/meuappv1.0/releases/tag/v1.1.32-alpha). Veja [todas as mudanças desde a Alpha 1.1.31](RELEASE_NOTES.md).
 
 As artes atuais têm três variações por elemento, vegetação isométrica e relevo sobreposto. Veja o [walkthrough visual](docs/Art_Walkthrough_1.1.30.md) e os [créditos das artes](THIRD_PARTY_NOTICES.md).
 
@@ -20,13 +20,31 @@ O VS Code pode abrir a pasta inteira. Também é possível compilar com `dotnet 
 - No formulário, escolha entre grade vazia, terra e água, relevo ou terreno completo com clima e biomas. Uma grade vazia pode ser preenchida depois em **Mapa → Gerar terreno**.
 - Em **Tipo de mapa**, escolha **Mundo — atlas completo** (padrão), com topo/base retos e laterais curvas, ou **Região — recorte aberto**, retangular. No Mundo, placas, continentes, ilhas, relevo, clima e rios são calculados em toda a área útil; não há um retângulo central com faixas copiadas ou continuação visual de terreno. A porcentagem de terra e mar usa os hexes úteis fora das placas polares, excluindo também os cantos fora do contorno. O número de continentes orienta a quantidade mínima de massas principais separadas por água. Arquivos antigos mantêm suas versões e sua geografia.
 - A barra de geração mostra a etapa em andamento e sua porcentagem. Os biomas usam clima e ruído em coordenadas globais, processados em chunks de 32 × 32 hexes. A camada **Terreno** suaviza as transições entre biomas terrestres. A faixa costeira usa a cor da terra vizinha e um contorno irregular sobre o oceano costeiro, que continua sendo inspecionado como água.
-- Mapas novos usam **Escultura continental (estilo Azgaar)**, com gerador v40: a distribuição de crosta das placas define terra e mar; colisões formam cordilheiras e arcos de ilhas, e afastamentos rebaixam o terreno. As costas recebem detalhes sobre essa base geológica. O número de continentes orienta as placas continentais e a separação das massas principais por água, com tamanhos diferentes. O percentual de terra é ajustado globalmente, sem cotas iguais por continente. Bacias fechadas viram lagos; relevo, latitude e transporte de umidade influenciam o clima e os biomas. Os algoritmos anteriores continuam suportados nos arquivos existentes.
-- No Mundo v40, as placas **Ártica** e **Antártica** são obrigatórias, adicionais às placas comuns e sempre oceânicas. Cobrem o topo e a base retos com fronteiras irregulares por seed e contatos de afastamento. A geração mantém essas faixas submersas. As duas placas ficam fora do total de placas comuns e dos cálculos de escala baseados nesse total; seu oceano fica fora da base da porcentagem de terra e mar. Massas de gelo ficam para uma etapa futura. Veja a [validação das placas polares](results/Placas_Polares_v38.md) e o [ajuste de contagem e porcentagem](results/Cotas_Polares_v39.md).
+- Mapas novos usam **Escultura continental (estilo Azgaar)**, com gerador v45: a distribuição de crosta das placas define terra e mar; colisões formam cordilheiras e arcos de ilhas, e afastamentos rebaixam o terreno. As costas recebem detalhes sobre essa base geológica. O número de continentes orienta as placas continentais e a separação das massas principais por água, com tamanhos diferentes. O percentual de terra é ajustado globalmente, sem cotas iguais por continente. Bacias fechadas viram lagos; relevo, latitude e transporte de umidade influenciam o clima e os biomas. Os algoritmos anteriores continuam suportados nos arquivos existentes.
+- No Mundo, as placas **Ártica** e **Antártica** são obrigatórias, adicionais às placas comuns e sempre oceânicas. Cobrem o topo e a base retos com fronteiras irregulares por seed e contatos de afastamento. A geração mantém essas faixas submersas. As duas placas ficam fora do total de placas comuns e dos cálculos de escala baseados nesse total; seu oceano fica fora da base da porcentagem de terra e mar. Massas de gelo ficam para uma etapa futura. Veja a [validação das placas polares](results/Placas_Polares_v38.md) e o [ajuste de contagem e porcentagem](results/Cotas_Polares_v39.md).
 - As duas laterais curvas do Mundo têm faixas de pequenas placas oceânicas, com limites irregulares e terreno sempre submerso para afastar as costas do contorno. Esse oceano lateral entra na porcentagem de água; apenas os polos ficam fora. Veja a [verificação das margens e da porcentagem](results/Margens_Oceanicas_v40.md).
 - Use a roda do mouse para aproximar, arraste com o botão direito ou do meio para mover e clique para inspecionar um hex.
 - O controle **Ícones** na barra superior alterna a camada de flora, fauna e detalhes. Os símbolos aparecem ao aproximar o terreno e são distribuídos pela seed conforme o bioma, o relevo e a água.
 - **Salvar** (`Ctrl+S`), **Salvar como** (`Ctrl+Shift+S`) e **Abrir último mapa** ficam no menu **Mapa**. **Editar mapa** abre os pincéis de bioma, relevo, água e elevação, seleção regional, locks por campo, regeneração e undo/redo. É possível salvar as alterações ou cancelar o rascunho.
 - Rios têm cinco níveis, curvas, afluentes, correnteza e foz recortada na costa. As camadas de **Tectônica** e **Chuva** ajudam a inspecionar a formação do terreno. Arquivos antigos preservam os dados e a versão de geração; abrir e salvar não regenera o mapa.
+
+Em desenvolvimento, o [esquema de dados v2](docs/Map_Data_Format_v2.md) separa bioma, relevo, forma geográfica e características, com IDs de 16 bits e 64 features combináveis. Saves v1 continuam abrindo e são convertidos para v2 ao salvar, sem regenerar o mapa; arquivos v2 exigem uma build com suporte ao novo formato.
+
+O renderer também abre um [corredor limpo ao longo dos rios](docs/River_Clearance.md), recortando a vegetação e os ícones junto ao leito, inclusive as partes das artes que vêm de hexes vizinhos. O efeito acompanha pan e zoom e não exige regenerar o mapa.
+
+Ao aproximar o zoom, a vegetação se acomoda gradualmente no canto superior esquerdo de cada hex, em uma composição mais compacta que libera o centro e a direita para detalhes. A visão afastada mantém a cobertura ampla e irregular.
+
+O [gerador v41 classifica formas geográficas por altitude e desnível](results/Relevo_Formas_Geograficas_v41.md): topos planos viram planaltos, quedas marcam serras/escarpas, e subidas identificam encostas e sopés. Pincéis de elevação/água atualizam a classificação dos vizinhos com locks e undo/redo; a regeneração oferece o campo **Forma geográfica**.
+
+Os [símbolos de relevo acompanham os contornos das elevações](results/Contornos_De_Relevo.md): montanhas, morros e escarpas ficam nas quebras de declividade, com artes sobrepostas formando uma faixa mais contínua. As bordas têm prolongamentos para o lado alto e as regiões mais elevadas recebem grupos esparsos também no centro; escarpas usam sua arte própria. Essa distribuição visual também é recalculada ao abrir mapas existentes, sem mudar o terreno salvo.
+
+O [gerador v42 remodela as margens de água](results/Margens_Agua_v42.md) com ruído espacial e altitude, varia a largura dos canais de separação e reduz o arredondamento visual das costas. A remodelagem preserva a área de cada massa terrestre e as conexões de terra e água; as cotas e as faixas oceânicas obrigatórias continuam respeitadas.
+
+O [gerador v43 atualiza clima e altitude máxima](results/Clima_Altitude_v43.md): aplica a curva térmica e os cinturões de chuva da especificação de clima, reforça a sombra de chuva e calibra os cumes das cordilheiras ativas para máximos de 6.000–8.000 m por seed, com altitudes extremas raras. Arquivos anteriores mantêm sua receita de geração.
+
+O [gerador v44 varia os corredores tectônicos e as bordas dos biomas](results/Bordas_Pantanos_v44.md), mantendo cotas, clima e locks. Pântanos arborizados passam a ocupar baixadas úmidas junto a rios, lagos rasos e enseadas abrigadas. O renderer usa ruído em várias escalas e um blend mais estreito para costas e biomas menos arredondados.
+
+O [gerador v45 absorve faixas estreitas pela maioria dos biomas vizinhos](results/Maioria_Biomas_Agrupamentos_v45.md), com leitura regional e local, compatibilidade climática e proteção de habitats. As artes de montanhas comuns também formam grupos regionais, com menor densidade que os picos.
 
 ## Verificar a build
 
@@ -44,7 +62,7 @@ O teste verifica o estado inicial, a seleção de hexes, as arestas compartilhad
 
 O núcleo em `src/Core` usa C# puro. `src/GodotApp` prepara as texturas e a interface, e o shader desenha terreno, relevo e vegetação com a arte de `tiles`, `relief` e `vegetation`. O `.world` é um ZIP versionado com a configuração de geração, os dados densos e as entidades esparsas. O arquivo é montado em um temporário antes de substituir o save anterior. A especificação na raiz lista os marcos seguintes.
 
-Para exportar o EXE portátil, instale os templates Windows .NET correspondentes ao Godot 4.7.2 e execute `godot --headless --path . --editor --export-release "Windows Desktop"`. O preset versionado gera `dist/Jota-Fantasy-Map-Maker-Alpha-1.1.31.exe`, com PCK e runtime incorporados.
+Para exportar o EXE portátil, instale os templates Windows .NET correspondentes ao Godot 4.7.2 e execute `godot --headless --path . --editor --export-release "Windows Desktop"`. O preset versionado gera `dist/Jota-Fantasy-Map-Maker-Alpha-1.1.32.exe`, com PCK e runtime incorporados.
 
 ## Agradecimentos
 

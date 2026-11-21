@@ -5,10 +5,10 @@ namespace Mapmaker.GodotApp;
 
 internal static class MapDetailIcons
 {
-    internal const int IconIdMask = 31;
-    internal const int CloseZoomFlag = 32;
+    internal const int IconIdMask = 65535;
+    internal const int CloseZoomFlag = 1 << 16;
 
-    private enum Icon : byte
+    private enum Icon : ushort
     {
         None, Grama, Arbusto, Tronco, PlantaRolante, Cogumelos, Flores, VitoriaRegia, Coqueiro, Samambaia,
         ArvoreSeca, PedraGrama, PedraNeve, Caverna, FonteTermal, Ossada, Conchas, Recife,
@@ -25,9 +25,9 @@ internal static class MapDetailIcons
         "peixe_pulando", "cauda_de_baleia"
     };
 
-    internal static byte[] Build(WorldData world, byte[] terrain)
+    internal static uint[] Build(WorldData world, byte[] terrain)
     {
-        var icons = new byte[world.Count];
+        var icons = new uint[world.Count];
         const int spacing = 7;
         bool hasDepth = world.Manifest.Generation.Stage >= GenerationStage.Relief;
         var above = new Icon[(world.Width + spacing - 1) / spacing];
@@ -47,12 +47,12 @@ internal static class MapDetailIcons
                     if (primary >= 0)
                     {
                         selected = PickIcon(world, primary, left, above[block]);
-                        icons[primary] = (byte)selected;
+                        icons[primary] = (uint)selected;
                     }
 
                     int close = PickCell(world, terrain, start, top, end, bottom, choice, hasDepth, true, primary);
                     if (close >= 0)
-                        icons[close] = (byte)((byte)PickIcon(world, close, selected, above[block]) | CloseZoomFlag);
+                        icons[close] = (uint)PickIcon(world, close, selected, above[block]) | CloseZoomFlag;
                 }
                 left = selected;
                 above[block] = selected;
@@ -140,6 +140,7 @@ internal static class MapDetailIcons
             BiomeType.TemperateForest => [Icon.Arbusto, Icon.Tronco, Icon.Cogumelos, Icon.Cogumelos, Icon.Veado, Icon.Lobo, Icon.Urso],
             BiomeType.Rainforest => [Icon.Samambaia, Icon.Tronco, Icon.Arbusto, Icon.Samambaia, Icon.Harpia, Icon.Tatu],
             BiomeType.Taiga => [Icon.Tronco, Icon.Cogumelos, Icon.PedraNeve, Icon.Arbusto, Icon.Lobo, Icon.Urso],
+            BiomeType.Swamp => [Icon.Tronco, Icon.Cogumelos, Icon.Samambaia, Icon.Arbusto, Icon.Samambaia],
             BiomeType.Tundra or BiomeType.Alpine => [Icon.PedraNeve, Icon.PedraNeve, Icon.Arbusto, Icon.ArvoreSeca, Icon.Lobo],
             BiomeType.Desert => [Icon.PlantaRolante, Icon.Ossada, Icon.ArvoreSeca, Icon.PlantaRolante, Icon.Escorpiao],
             BiomeType.Steppe => [Icon.Grama, Icon.PedraGrama, Icon.ArvoreSeca, Icon.PlantaRolante, Icon.Ossada],

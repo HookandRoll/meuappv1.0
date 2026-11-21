@@ -11,15 +11,24 @@ public partial class RiverOverlay : Node2D
     private WorldData? _world;
     private JsonElement _source;
     private ShaderMaterial? _water;
+    private ShaderMaterial? _clearance;
+    private ShaderMaterial? _terrain;
+    private SubViewport? _clearanceViewport;
+    private Node2D? _clearanceRoot;
+    private Transform2D _clearanceTransform;
+    private bool _clearanceDirty = true;
+    private bool _hasGeometry;
+    internal bool ClearanceEnabled { get; set; } = true;
+    internal Texture2D? ClearanceTexture => _clearanceViewport?.GetTexture();
     public WorldData? World
     {
         get => _world;
         set
         {
-            bool changed = value is not null && (_world is null || value.Width != _world.Width ||
+            bool changed = value is null ? _world is not null : (_world is null || value.Width != _world.Width ||
                 value.Height != _world.Height || !_source.Equals(value.SparseEntities));
             _world = value;
-            if (changed) { _source = value!.SparseEntities; Rebuild(); }
+            if (changed) { _source = value?.SparseEntities ?? default; Rebuild(); }
         }
     }
     private sealed class Geometry
@@ -29,18 +38,79 @@ public partial class RiverOverlay : Node2D
         public readonly List<Color> Colors = new();
         public readonly List<int> Indices = new();
     }
-    internal void BindTerrain(Texture2D texture, WorldData world)
+    internal void BindTerrain(Texture2D texture, Texture2DArray attributes, WorldData world)
     {
         _water ??= new ShaderMaterial { Shader = GD.Load<Shader>("res://src/GodotApp/River.gdshader") };
         _water.SetShaderParameter("terrain_data", texture);
+        _water.SetShaderParameter("map_attributes", attributes);
         _water.SetShaderParameter("map_size", new Vector2I(world.Width, world.Height));
         _water.SetShaderParameter("horizontal_wrap", world.Manifest.HorizontalWrap);
+        _water.SetShaderParameter("natural_water_shapes", world.Manifest.GeneratorVersion >= 42);
+        _water.SetShaderParameter("boundary_noise_offset", MapView.BoundaryNoiseOffset(world));
+        EnsureClearance();
+        _clearance!.SetShaderParameter("terrain_data", texture);
+        _clearance.SetShaderParameter("map_attributes", attributes);
+        _clearance.SetShaderParameter("map_size", new Vector2I(world.Width, world.Height));
+        _clearance.SetShaderParameter("horizontal_wrap", world.Manifest.HorizontalWrap);
+        _clearance.SetShaderParameter("natural_water_shapes", world.Manifest.GeneratorVersion >= 42);
+        _clearance.SetShaderParameter("boundary_noise_offset", MapView.BoundaryNoiseOffset(world));
+        _clearanceDirty = true;
+    }
+    internal void BindClearance(ShaderMaterial terrain)
+    {
+        EnsureClearance();
+        _terrain = terrain;
+        terrain.SetShaderParameter("river_clearance", _clearanceViewport!.GetTexture());
+        terrain.SetShaderParameter("has_river_clearance", false);
+        _clearanceDirty = true;
+    }
+
+    private void EnsureClearance()
+    {
+        if (_clearanceViewport is not null) return;
+        _clearance = new ShaderMaterial { Shader = GD.Load<Shader>("res://src/GodotApp/River.gdshader") };
+        _clearance.SetShaderParameter("clearance_mask", true);
+        _clearanceViewport = new SubViewport { Name = "RiverClearance", Size = Vector2I.One,
+            Disable3D = true, TransparentBg = true, World2D = new World2D(),
+            RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled };
+        AddChild(_clearanceViewport);
+        _clearanceRoot = new Node2D();
+        _clearanceViewport.AddChild(_clearanceRoot);
+    }
+
+    public override void _Process(double delta)
+    {
+        if (_clearanceViewport is null || _terrain is null) return;
+        bool active = ClearanceEnabled && _hasGeometry && IsVisibleInTree();
+        _terrain.SetShaderParameter("has_river_clearance", active);
+        if (!active)
+        {
+            _clearanceViewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+            _clearanceDirty = true;
+            return;
+        }
+        Vector2I size = (Vector2I)GetViewport().GetVisibleRect().Size;
+        size = new(Math.Max(1, size.X), Math.Max(1, size.Y));
+        Transform2D transform = GetGlobalTransformWithCanvas();
+        if (_clearanceViewport.Size != size || transform != _clearanceTransform || _clearanceDirty)
+        {
+            _clearanceViewport.Size = size;
+            _clearanceRoot!.Transform = transform;
+            _clearanceTransform = transform;
+            _clearanceViewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Once;
+            _clearanceDirty = false;
+        }
     }
     internal void Invalidate() => _source = default;
 
     private void Rebuild()
     {
-        foreach (Node child in GetChildren()) { RemoveChild(child); child.QueueFree(); }
+        EnsureClearance();
+        foreach (Node child in GetChildren())
+            if (child != _clearanceViewport) { RemoveChild(child); child.QueueFree(); }
+        foreach (Node child in _clearanceRoot!.GetChildren()) { _clearanceRoot.RemoveChild(child); child.QueueFree(); }
+        _hasGeometry = false;
+        _clearanceDirty = true;
         if (_world is not { } world) return;
         _water ??= new ShaderMaterial { Shader = GD.Load<Shader>("res://src/GodotApp/River.gdshader") };
         float span = world.Width * HexGrid.Root3;
@@ -150,8 +220,11 @@ public partial class RiverOverlay : Node2D
                     int vertex = geometry.Vertices.Count;
                     geometry.Vertices.Add(new Vector3(point.X + normal.X * half, point.Y + normal.Y * half, 0));
                     geometry.Vertices.Add(new Vector3(point.X - normal.X * half, point.Y - normal.Y * half, 0));
-                    Color size = new(Math.Clamp(width / 0.50f, 0, 1), 1, 1, 1);
-                    geometry.Colors.Add(size); geometry.Colors.Add(size);
+                    // GB store the outward vertex normal. The mask expands this
+                    // same mesh on the GPU, with no duplicate curve/vertex buffers.
+                    float size = Math.Clamp(width / 0.50f, 0, 1);
+                    geometry.Colors.Add(new Color(size, normal.X * 0.5f + 0.5f, normal.Y * 0.5f + 0.5f, 1));
+                    geometry.Colors.Add(new Color(size, -normal.X * 0.5f + 0.5f, -normal.Y * 0.5f + 0.5f, 1));
                     geometry.UV.Add(new Vector2(0, length)); geometry.UV.Add(new Vector2(1, length));
                     if (step > 0)
                     {
@@ -170,7 +243,10 @@ public partial class RiverOverlay : Node2D
             arrays[(int)Mesh.ArrayType.Color] = geometry.Colors.ToArray();
             arrays[(int)Mesh.ArrayType.Index] = geometry.Indices.ToArray();
             var mesh = new ArrayMesh(); mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+            mesh.CustomAabb = mesh.GetAabb().Grow(0.5f);
             AddChild(new MeshInstance2D { Mesh = mesh, Material = _water });
+            _clearanceRoot.AddChild(new MeshInstance2D { Mesh = mesh, Material = _clearance });
+            _hasGeometry = true;
         }
     }
 }

@@ -384,10 +384,11 @@ public partial class MapView
     }
 
     private readonly record struct DenseCell(short Elevation, WaterType Water, ReliefType Relief, BiomeType Biome,
-        short Temperature, ushort Rainfall, ushort Roads, ushort Rivers, byte Flags, ushort Locks);
+        short Temperature, ushort Rainfall, ushort Roads, ushort Rivers, byte Flags, ushort Locks,
+        LandformType Landform, GeographicFeatures Features);
 
     private static DenseCell[] ReadDense(WorldData world) =>
         Enumerable.Range(0, world.Count).Select(i => new DenseCell(world.Elevation[i], world.Water[i], world.Relief[i],
             world.Biomes[i], world.Temperature[i], world.Rainfall[i], world.RoadEdges[i], world.RiverEdges[i],
-            world.Flags[i], world.LockMask[i])).ToArray();
+            world.Flags[i], world.LockMask[i], world.Landforms[i], world.Features[i])).ToArray();
 }

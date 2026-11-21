@@ -144,6 +144,8 @@ public static partial class WorldGenerator
             }
             if (wet && world.Biomes[cell] is BiomeType.Desert or BiomeType.Steppe && world.Temperature[cell] > 45)
                 world.Biomes[cell] = BiomeType.Grassland;
+            if (world.Manifest.GeneratorVersion >= 44 && IsSwampMargin(world, cell))
+                world.Biomes[cell] = BiomeType.Swamp;
         }
     }
 

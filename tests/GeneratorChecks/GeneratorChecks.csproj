@@ -13,6 +13,13 @@
     <Compile Include="PolarChecks.cs" />
     <Compile Include="AtlasChecks.cs" />
     <Compile Include="PolarPlateChecks.cs" />
+    <Compile Include="FormatChecks.cs" />
+    <Compile Include="TerrainClassificationChecks.cs" />
+    <Compile Include="WaterMarginChecks.cs" />
+    <Compile Include="ReliefContourChecks.cs" />
+    <Compile Include="ClimateHeightChecks.cs" />
+    <Compile Include="SwampChecks.cs" />
+    <Compile Include="BiomeMajorityChecks.cs" />
   </ItemGroup>
 </Project>
 

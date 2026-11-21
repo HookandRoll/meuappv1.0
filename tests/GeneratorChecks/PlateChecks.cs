@@ -74,11 +74,18 @@ public static partial class WorldGenerator
         if (collisionHeight < riftHeight + 1000) throw new Exception($"Collision/rift have similar heights: {collisionHeight}/{riftHeight}.");
         if (core.Any(i => extension.World.Relief[i] >= ReliefType.Mountains && extension.World.Water[i] == WaterType.None))
             throw new Exception("Divergent core acquired mountains.");
-        if (!core.Any(i => collision.World.Relief[i] >= ReliefType.Mountains)) throw new Exception("Continental collision has no mountains.");
+        // v41 can classify the broad summit as a plateau. The collision must
+        // still produce mountain flanks, rather than forcing icons by altitude.
+        int[] belt = Enumerable.Range(0, m.Width * m.Height).Where(i => Math.Abs(i % m.Width - m.Width * 0.66f) < m.Width * 0.1f &&
+            i / m.Width > m.Height * 0.2f && i / m.Width < m.Height * 0.8f).ToArray();
+        int collisionMountains = belt.Count(i => collision.World.Water[i] == WaterType.None && collision.World.Relief[i] >= ReliefType.Mountains);
+        int riftMountains = belt.Count(i => extension.World.Water[i] == WaterType.None && extension.World.Relief[i] >= ReliefType.Mountains);
+        if (m.GeneratorVersion >= 41 ? collisionMountains < riftMountains + 30 : !core.Any(i => collision.World.Relief[i] >= ReliefType.Mountains))
+            throw new Exception($"Continental collision lacks mountain flanks: collision={collisionMountains}, rift={riftMountains}.");
         Directory.CreateDirectory(".godot/tectonic-review33");
         foreach (var (name, sample) in new[] { ("ocean-collision", oceanCollision), ("ocean-passive", oceanPassive), ("continental-collision", collision), ("continental-rift", extension) })
             WritePlateReview(name, sample.World, sample.Ridges);
-        Console.WriteLine($"PASS: ocean collision exposed {emerged} additional arc cells ({detached} cells across {arcIslands} detached islands); continental collision mean={collisionHeight:F0}m, rift mean={riftHeight:F0}m; divergent core has no mountains");
+        Console.WriteLine($"PASS: ocean collision exposed {emerged} additional arc cells ({detached} cells across {arcIslands} detached islands); continental collision mean={collisionHeight:F0}m, rift mean={riftHeight:F0}m; mountain flanks={collisionMountains}/{riftMountains}; divergent core has no mountains");
     }
 
     internal static void CheckContinentSeparation()

@@ -6,12 +6,16 @@ namespace Mapmaker.GodotApp;
 
 internal static class OceanShelf
 {
-    // The RG texture stores icon data in red and distance to land in green.
-    public static byte[] BuildDetails(WorldData world, byte[] icons)
+    // RGBA: icon ID low/high, display flags, distance to land.
+    public static byte[] BuildDetails(WorldData world, uint[] icons)
     {
-        var data = new byte[world.Count * 2];
+        var data = new byte[world.Count * 4];
         for (int i = 0; i < world.Count; i++)
-            data[i * 2] = icons[i];
+        {
+            data[i * 4] = (byte)icons[i];
+            data[i * 4 + 1] = (byte)(icons[i] >> 8);
+            data[i * 4 + 2] = (byte)(icons[i] >> 16);
+        }
 
         int width = world.Width;
         int height = world.Height;
@@ -104,7 +108,7 @@ internal static class OceanShelf
             int site = sites[best];
             int dy = row - site;
             float distance = MathF.Sqrt(horizontal[site * width + col] + 3 * dy * dy);
-            data[(row * width + col) * 2 + 1] = (byte)Math.Min(255f, MathF.Round(distance * 255f / reach));
+            data[(row * width + col) * 4 + 3] = (byte)Math.Min(255f, MathF.Round(distance * 255f / reach));
         }
     }
 }

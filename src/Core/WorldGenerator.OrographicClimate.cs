@@ -12,20 +12,20 @@ public static partial class WorldGenerator
         return latitude is > 0.3f and < 0.7f ? 1 : -1;
     }
 
-    private static (float A, float B, float Condensed) MoistureCoefficients(short previous, short elevation, WaterType water, float length)
+    private static (float A, float B, float Condensed) MoistureCoefficients(short previous, short elevation, WaterType water, float length, bool modern = false)
     {
-        float condensed = 1 - MathF.Exp(-Math.Max(0, elevation - previous) / 2200f);
+        float condensed = 1 - MathF.Exp(-Math.Max(0, elevation - previous) / (modern ? 1500f : 2200f));
         float retention = MathF.Exp(-1 / length);
         return water switch
         {
             WaterType.Ocean => (0, 1, 0),
             WaterType.Lake => (0.25f, 0.75f * 0.85f, 0),
-            _ => (retention * (1 - condensed), (1 - retention) * 0.55f, condensed)
+            _ => (retention * (1 - condensed), (1 - retention) * (modern ? 0.35f : 0.55f), condensed)
         };
     }
 
     internal static void TransportMoistureRow(short[] heights, WaterType[] water, ushort[] result,
-        int width, bool wrap, int wind, float recoveryLength)
+        int width, bool wrap, int wind, float recoveryLength, bool modern = false)
     {
         float aTotal = 1, bTotal = 0;
         int first = wind > 0 ? 0 : width - 1;
@@ -34,7 +34,7 @@ public static partial class WorldGenerator
             for (int step = 0; step < width; step++)
             {
                 int x = first + step * wind, previous = (x - wind + width) % width;
-                var (a, b, _) = MoistureCoefficients(heights[previous], heights[x], water[x], recoveryLength);
+                var (a, b, _) = MoistureCoefficients(heights[previous], heights[x], water[x], recoveryLength, modern);
                 aTotal *= a; bTotal = a * bTotal + b;
             }
         }
@@ -45,7 +45,7 @@ public static partial class WorldGenerator
             int x = first + step * wind, previous = x - wind;
             previous = wrap ? (previous + width) % width : Math.Clamp(previous, 0, width - 1);
             result[x] = (ushort)Math.Clamp((int)MathF.Round(humidity * 65535), 0, 65535);
-            var (a, b, _) = MoistureCoefficients(heights[previous], heights[x], water[x], recoveryLength);
+            var (a, b, _) = MoistureCoefficients(heights[previous], heights[x], water[x], recoveryLength, modern);
             humidity = a * humidity + b;
         }
     }

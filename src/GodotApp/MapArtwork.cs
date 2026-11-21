@@ -9,16 +9,69 @@ internal sealed class MapArtwork : IDisposable
 
     private readonly Texture2DArray _ground = Load("tiles", 512, false,
         "beach", "grasslands", "temperate_forest", "rainforest", "savanna", "steppe", "desert",
-        "taiga", "tundra", "alpine", "shallow_ocean", "lake", "wetland", "deep_ocean");
+        "taiga", "tundra", "alpine", "shallow_ocean", "lake", "wetland", "deep_ocean", "swamp");
     private readonly Texture2DArray _relief = Load("relief", 256, true,
-        "rolling_hills", "hills", "mountains", "peaks", "snowy_peaks");
+        "rolling_hills", "hills", "mountains", "peaks", "snowy_peaks", "escarpment");
     private readonly Texture2DArray _vegetation = Load("vegetation", 256, true,
-        "temperate_trees", "rainforest_canopy", "taiga_pines", "savanna_trees", "desert_scrub", "wetland_reeds");
+        "temperate_trees", "rainforest_canopy", "taiga_pines", "savanna_trees", "desert_scrub", "wetland_reeds", "swamp_trees");
     private readonly Texture2DArray _details = Load("Icons", 128, true, MapDetailIcons.FileNames);
+
+    private readonly Texture2DArray _catalog = LoadCatalog();
+
+    private static Texture2DArray LoadCatalog()
+    {
+        // 256 x 256 addresses every ushort ID without relying on enum order.
+        byte[] biomes = new byte[256 * 256 * 4], relief = new byte[biomes.Length], icons = new byte[biomes.Length];
+        for (int id = 0; id <= ushort.MaxValue; id++)
+        {
+            int i = id * 4;
+            biomes[i] = 1; // Unknown ground -> grass fallback.
+            biomes[i + 2] = biomes[i + 3] = 255; // No vegetation.
+            relief[i] = relief[i + 1] = 255; // No relief symbol.
+            icons[i] = icons[i + 1] = 255; // No detail symbol.
+        }
+        var ground = new[] { Mapmaker.Core.BiomeType.Beach, Mapmaker.Core.BiomeType.Grassland,
+            Mapmaker.Core.BiomeType.TemperateForest, Mapmaker.Core.BiomeType.Rainforest,
+            Mapmaker.Core.BiomeType.Savanna, Mapmaker.Core.BiomeType.Steppe, Mapmaker.Core.BiomeType.Desert,
+            Mapmaker.Core.BiomeType.Taiga, Mapmaker.Core.BiomeType.Tundra, Mapmaker.Core.BiomeType.Alpine };
+        for (int art = 0; art < ground.Length; art++) biomes[(int)ground[art] * 4] = (byte)art;
+        biomes[(int)Mapmaker.Core.BiomeType.Swamp * 4] = 14;
+        biomes[(int)Mapmaker.Core.BiomeType.Swamp * 4 + 2] = 6;
+        biomes[(int)Mapmaker.Core.BiomeType.Swamp * 4 + 3] = 0;
+        var vegetation = new[] { Mapmaker.Core.BiomeType.TemperateForest, Mapmaker.Core.BiomeType.Rainforest,
+            Mapmaker.Core.BiomeType.Taiga, Mapmaker.Core.BiomeType.Savanna, Mapmaker.Core.BiomeType.Desert };
+        for (int art = 0; art < vegetation.Length; art++)
+        {
+            int i = (int)vegetation[art] * 4 + 2;
+            biomes[i] = (byte)art; biomes[i + 1] = 0;
+        }
+        var shapes = new[] { Mapmaker.Core.ReliefType.Rolling, Mapmaker.Core.ReliefType.Hills,
+            Mapmaker.Core.ReliefType.Mountains, Mapmaker.Core.ReliefType.Peak };
+        for (int art = 0; art < shapes.Length; art++)
+        {
+            int i = (int)shapes[art] * 4;
+            relief[i] = (byte)art; relief[i + 1] = 0;
+        }
+        for (int art = 0; art < MapDetailIcons.FileNames.Length; art++)
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(icons.AsSpan((art + 1) * 4, 2), (ushort)art);
+        var images = new Godot.Collections.Array<Image>();
+        var catalog = new Texture2DArray();
+        try
+        {
+            images.Add(Image.CreateFromData(256, 256, false, Image.Format.Rgba8, biomes));
+            images.Add(Image.CreateFromData(256, 256, false, Image.Format.Rgba8, relief));
+            images.Add(Image.CreateFromData(256, 256, false, Image.Format.Rgba8, icons));
+            if (catalog.CreateFromImages(images) != Error.Ok) throw new InvalidOperationException("Catálogo de artes inválido.");
+            return catalog;
+        }
+        catch { catalog.Dispose(); throw; }
+        finally { foreach (var image in images) image.Dispose(); }
+    }
 
     public void Bind(ShaderMaterial material)
     {
         material.SetShaderParameter("ground_art", _ground);
+        material.SetShaderParameter("art_catalog", _catalog);
         material.SetShaderParameter("relief_art", _relief);
         material.SetShaderParameter("vegetation_art", _vegetation);
         material.SetShaderParameter("detail_art", _details);
@@ -27,6 +80,7 @@ internal sealed class MapArtwork : IDisposable
     public void Dispose()
     {
         _ground.Dispose();
+        _catalog.Dispose();
         _relief.Dispose();
         _vegetation.Dispose();
         _details.Dispose();

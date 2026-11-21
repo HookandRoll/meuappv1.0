@@ -187,7 +187,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
     internal static bool FieldAvailable(GenerationStage stage, HexLocks field) => field switch
     {
         HexLocks.Water => stage >= GenerationStage.Land,
-        HexLocks.Relief or HexLocks.Elevation => stage >= GenerationStage.Relief,
+        HexLocks.Relief or HexLocks.Elevation or HexLocks.Landform or HexLocks.Features => stage >= GenerationStage.Relief,
         _ => stage >= GenerationStage.Terrain
     };
 
@@ -275,6 +275,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
         _hexDetails.Text = cell < 0 ? "Selecione um hex no mapa." :
             $"Hex {cell % world.Width}, {cell / world.Width}\n{MapView.BiomeLabel(world.Biomes[cell])}\n" +
             $"{MapView.ReliefLabel(world.Relief[cell])} · {world.Elevation[cell]} m\n" +
+            (MapView.GeographyDescription(world, cell) is string geography && geography.Length > 0 ? geography.Trim(' ', '·') + "\n" : "") +
             $"{world.Temperature[cell] * 0.1:F1} °C · {world.Rainfall[cell]} mm/ano\n" +
             $"Locks · {LockLabel((HexLocks)world.LockMask[cell])}";
         RefreshHexValue();
@@ -286,7 +287,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
         _applyHex.Disabled = !_editingEnabled || _inspectedCell < 0 || _inspectedWorld is null ||
             !FieldAvailable(_inspectedWorld.Manifest.Generation.Stage, field) ||
             ((HexLocks)_inspectedWorld.LockMask[_inspectedCell] & field) != 0;
-        bool categorical = field is HexLocks.Biome or HexLocks.Relief or HexLocks.Water;
+        bool categorical = field is HexLocks.Biome or HexLocks.Relief or HexLocks.Water or HexLocks.Landform;
         _hexValue.Visible = categorical && _inspectedCell >= 0;
         _hexNumber.Visible = !categorical && _inspectedCell >= 0;
         _hexValue.Clear();
@@ -296,6 +297,9 @@ internal sealed partial class MapEditorPanel : PanelContainer
         if (field == HexLocks.Relief)
             foreach (ReliefType relief in Enum.GetValues<ReliefType>())
                 _hexValue.AddItem(MapView.ReliefLabel(relief), (int)relief);
+        if (field == HexLocks.Landform)
+            foreach (LandformType landform in Enum.GetValues<LandformType>())
+                _hexValue.AddItem(MapView.LandformLabel(landform), (int)landform);
         if (field == HexLocks.Water)
             foreach (string water in new[] { "Terra", "Oceano", "Lago", "Pântano" })
                 _hexValue.AddItem(water);
@@ -309,11 +313,15 @@ internal sealed partial class MapEditorPanel : PanelContainer
         int value = field switch
         {
             HexLocks.Biome => (int)world.Biomes[i], HexLocks.Relief => (int)world.Relief[i],
+            HexLocks.Landform => (int)world.Landforms[i],
             HexLocks.Water => (int)world.Water[i], HexLocks.Elevation => world.Elevation[i],
             HexLocks.Temperature => world.Temperature[i], _ => world.Rainfall[i]
         };
         if (categorical)
+        {
+            if (_hexValue.GetItemIndex(value) < 0) _hexValue.AddItem($"ID {value} (preservado)", value);
             _hexValue.Select(_hexValue.GetItemIndex(value));
+        }
         else
             _hexNumber.Value = value;
     }
@@ -588,13 +596,17 @@ internal sealed partial class MapEditorPanel : PanelContainer
         var riverLock = new CheckBox { Text = "Rios", TooltipText = "Protege todas as arestas fluviais do hex, inclusive o lado compartilhado com vizinhos." };
         grid.AddChild(riverLock);
         AddLock(riverLock, HexLocks.Rivers);
+        var featureLock = new CheckBox { Text = "Características" };
+        grid.AddChild(featureLock);
+        AddLock(featureLock, HexLocks.Features);
         return title;
     }
 
     internal static readonly (HexLocks Field, string Label)[] EditableFields =
     {
         (HexLocks.Biome, "Bioma"), (HexLocks.Relief, "Relevo"), (HexLocks.Water, "Água"),
-        (HexLocks.Elevation, "Elevação"), (HexLocks.Temperature, "Temperatura"), (HexLocks.Rainfall, "Chuva")
+        (HexLocks.Elevation, "Elevação"), (HexLocks.Temperature, "Temperatura"), (HexLocks.Rainfall, "Chuva"),
+        (HexLocks.Landform, "Forma geográfica")
     };
 
     internal static string LockLabel(HexLocks locks)
@@ -608,6 +620,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
         if ((locks & HexLocks.Roads) != 0) fields.Add("Estradas");
         if ((locks & HexLocks.Rivers) != 0) fields.Add("Rios");
         if ((locks & HexLocks.Flags) != 0) fields.Add("Marcadores");
+        if ((locks & HexLocks.Features) != 0) fields.Add("Características geográficas");
         return fields.Count == 0 ? "—" : string.Join(", ", fields);
     }
 

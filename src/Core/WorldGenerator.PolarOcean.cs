@@ -75,6 +75,8 @@ public static partial class WorldGenerator
         source.Elevation.CopyTo(destination.Elevation, destinationOffset);
         source.Relief.CopyTo(destination.Relief, destinationOffset);
         source.Biomes.CopyTo(destination.Biomes, destinationOffset);
+        source.Landforms.CopyTo(destination.Landforms, destinationOffset);
+        source.Features.CopyTo(destination.Features, destinationOffset);
         source.Temperature.CopyTo(destination.Temperature, destinationOffset);
         source.Rainfall.CopyTo(destination.Rainfall, destinationOffset);
         source.RoadEdges.CopyTo(destination.RoadEdges, destinationOffset);
@@ -124,6 +126,7 @@ public static partial class WorldGenerator
             int j = i + shift;
             central.Water[i] = world.Water[j]; central.Elevation[i] = world.Elevation[j];
             central.Relief[i] = world.Relief[j]; central.Biomes[i] = world.Biomes[j];
+            central.Landforms[i] = world.Landforms[j]; central.Features[i] = world.Features[j];
             central.Temperature[i] = world.Temperature[j]; central.Rainfall[i] = world.Rainfall[j];
             central.Flags[i] = world.Flags[j]; central.LockMask[i] = world.LockMask[j];
         }

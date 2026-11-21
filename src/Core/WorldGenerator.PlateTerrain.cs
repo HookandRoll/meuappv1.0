@@ -93,7 +93,17 @@ public static partial class WorldGenerator
                         float Band(float d, float width) => MathF.Exp(-d * d / (width * width));
                         if (contact.Compression < -0.25f)
                         {
-                            depression[i] = Math.Max(depression[i], strength * Band(distance, belt));
+                            float riftDistance = distance, riftWidth = belt, riftStrength = strength;
+                            if (_manifest.GeneratorVersion >= 44)
+                            {
+                                float signed = Vector2.Dot(delta, normal);
+                                float riftOffset = WaterMarginField(col, row) * belt * 0.65f;
+                                riftDistance = MathF.Sqrt(Math.Max(0, distance * distance - signed * signed)
+                                    + (signed + riftOffset) * (signed + riftOffset));
+                                riftWidth *= 0.65f + 0.40f * WaterWidthFactor(col, row);
+                                riftStrength *= 0.70f + 0.30f * FieldNoise(col, row, 17, _seed ^ 0x72D19B43u);
+                            }
+                            depression[i] = Math.Max(depression[i], riftStrength * Band(riftDistance, riftWidth));
                         }
                         else if (contact.Compression > 0.25f)
                         {
@@ -144,6 +154,7 @@ public static partial class WorldGenerator
             float sea = FindSculptedSeaLevel();
             WaterType[] water = SelectPlateSeaLevel(sea);
             if (_manifest.GeneratorVersion >= 35) SeparatePlateContinents(water, sea);
+            if (_manifest.GeneratorVersion >= 42) SculptWaterMargins(water, sea);
             VisitChunks(_chunks, (i, _, _) =>
             {
                 float altitude = _scores[i] - sea;

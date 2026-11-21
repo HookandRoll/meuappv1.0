@@ -9,7 +9,7 @@ public readonly record struct GenerationProgress(GenerationStep Step, int Percen
 
 public static partial class WorldGenerator
 {
-    public const int Version = 40;
+    public const int Version = 45;
     internal const short SculptedStraitDepth = -137;
     private const int HistogramSize = 2048;
     // Two forest growth passes read up to two hexes away each. Cleanup reads one more.
@@ -42,17 +42,23 @@ public static partial class WorldGenerator
         HexLocks field = HexLocks.None, Action<GenerationProgress>? progress = null)
     {
         HexLocks fields = HexLocks.Water | HexLocks.Elevation | HexLocks.Relief |
-            HexLocks.Temperature | HexLocks.Rainfall | HexLocks.Biome | HexLocks.Rivers;
+            HexLocks.Temperature | HexLocks.Rainfall | HexLocks.Biome | HexLocks.Rivers | HexLocks.Landform;
         if (!Enum.IsDefined(mode) || (field & ~fields) != 0 || (field != 0 && ((int)field & ((int)field - 1)) != 0))
             throw new ArgumentException("Modo ou campo de regeneração inválido.");
         if (field != HexLocks.None)
             fields = field;
         else
         {
+            if (world.Manifest.GeneratorVersion < 41) fields &= ~HexLocks.Landform;
             if (mode >= RegenerationMode.KeepWater)
                 fields &= ~HexLocks.Water;
             if (mode == RegenerationMode.KeepWaterAndElevation)
-                fields &= ~(HexLocks.Elevation | HexLocks.Relief);
+                fields &= ~(HexLocks.Elevation | HexLocks.Relief | HexLocks.Landform);
+        }
+        if (field == HexLocks.Landform)
+        {
+            TerrainClassifier.ReclassifyRegion(world, region, updateRelief: false);
+            return;
         }
         RegenerateRegion(world, region, fields, progress);
         if ((fields & HexLocks.Rivers) != 0 && world.Manifest.GeneratorVersion >= 18 &&
@@ -86,6 +92,14 @@ public static partial class WorldGenerator
             margin += MinimumBeachSize - 1;
         if (world.Manifest.Generation.Stage == GenerationStage.Terrain && world.Manifest.GeneratorVersion >= 31)
             margin += 2 * SmallBiomeLimit(world.Height);
+        if (world.Manifest.GeneratorVersion >= 41)
+            margin = Math.Max(margin, TerrainClassifier.RegionalRadius(world.Manifest));
+        if (world.Manifest.GeneratorVersion >= 44) margin += Math.Max(1, world.Height / 128);
+        if (world.Manifest.GeneratorVersion >= 45)
+        {
+            int majorityRadius = Math.Clamp(world.Height / 96, 3, 24);
+            margin += majorityRadius + Math.Max(2, (majorityRadius + 1) / 2) + 1;
+        }
         var area = new GenerationArea(world, ExpandRegion(world, region, margin),
             selection: region, fields: fields);
         Generate(world, area, progress);
@@ -187,6 +201,8 @@ public static partial class WorldGenerator
                             : LandElevation((float)x / world.Width, (float)y / world.Height, aspect, altitude,
                             seed, ridges?[cell], reliefDensity).Elevation;
                 }, manifest.GeneratorVersion >= 33 && sculpt ? ridges : null) : null;
+        if (manifest.GeneratorVersion >= 43 && sculpt && gentleElevation is not null && ridges is not null)
+            CalibrateTectonicSummits(gentleElevation, ridges, world.Domain, seed);
         progress?.Invoke(new(GenerationStep.Elevation, 0));
         VisitChunks(area.Chunks, (i, col, row) =>
         {
@@ -221,7 +237,19 @@ public static partial class WorldGenerator
             if (terrain)
                 openPlains[i] = manifest.GeneratorVersion < 30 && plain >= 0.73f && area.Relief[i] == ReliefType.Flat;
         }, progress, GenerationStep.Elevation, 0, 90);
-        RebuildCoast(area, progress, GenerationStep.Elevation, 90);
+        if (manifest.GeneratorVersion >= 41)
+        {
+            var samples = new TerrainClassifier.Samples(world, area.Bounds, area.Elevation, area.Water);
+            VisitChunks(area.Chunks, (i, col, row) =>
+            {
+                col = area.WorldColumn(col); row = area.WorldRow(row);
+                int cell = row * world.Width + col;
+                var classification = TerrainClassifier.Classify(samples, cell);
+                area.Relief[i] = area.Writes(col, row, cell, HexLocks.Relief) ? classification.Relief : world.Relief[cell];
+                area.Landforms[i] = area.Writes(col, row, cell, HexLocks.Landform) ? classification.Landform : world.Landforms[cell];
+            }, progress, GenerationStep.Elevation, 90, 95);
+        }
+        RebuildCoast(area, progress, GenerationStep.Elevation, manifest.GeneratorVersion >= 41 ? 95 : 90);
         if (!terrain)
             return;
 
@@ -272,7 +300,7 @@ public static partial class WorldGenerator
                 : SeaExposure(maritimeScore, seaLevel, world.Width, world.Height, col, row, climateRadius, sculpt && manifest.HorizontalWrap);
             if (regionalRain is not null) maritime = regionalRain.Moisture[i] / 65535f;
             var (temperature, rainfall) = Climate((float)col / world.Width, (float)row / world.Height,
-                aspect, area.Elevation[i], maritime, seed);
+                aspect, area.Elevation[i], maritime, seed, manifest.GeneratorVersion, manifest.HorizontalWrap);
             if (regionalRain is not null) rainfall = regionalRain.Rain[i];
             else if (moisture is not null)
             {
@@ -348,6 +376,8 @@ public static partial class WorldGenerator
         RefineLandBiomes(area, openPlains, progress, finishRibbons ? 97 : 100);
         if (finishRibbons)
             FinishBiomeRibbons(area, openPlains, manifest.GeneratorVersion >= 31 ? null : progress);
+        if (manifest.GeneratorVersion >= 44) RoughenBiomeBorders(area, seed);
+        if (manifest.GeneratorVersion >= 45) PropagateBiomeMajority(area, openPlains);
         if (manifest.GeneratorVersion >= 31)
             ConsolidateSmallBiomes(area, openPlains, progress);
     }
@@ -632,8 +662,9 @@ public static partial class WorldGenerator
     }
 
     private static (short Temperature, ushort Rainfall) Climate(
-        float x, float y, float aspect, short elevation, float maritime, uint seed)
+        float x, float y, float aspect, short elevation, float maritime, uint seed, int version = 0, bool wrap = false)
     {
+        if (version >= 43) return ModernClimate(x, y, aspect, elevation, maritime, seed, wrap);
         float latitude = Math.Abs(y - 0.5f) * 2f;
         float latitudeSquared = latitude * latitude;
         // Keep a broad temperate belt while letting the outer latitudes cool more steeply.

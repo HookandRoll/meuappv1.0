@@ -16,11 +16,16 @@ public static partial class WorldGenerator
         private readonly ushort[] _locks;
         private readonly MapDomain _domain;
         public int WorldHeight { get; }
+        public int WorldWidth => _worldWidth;
+        public bool Wrap => _wrap;
+        public bool Locked(int cell, HexLocks field) => ((HexLocks)_locks[cell] & field) != 0;
+        public WorldRegion Bounds => _bounds;
         public int Count => _bounds.Width * _bounds.Height;
         public ChunkGrid Chunks => new(_bounds.Width, _bounds.Height);
         public short[] Elevation { get; }
         public WaterType[] Water { get; }
         public ReliefType[] Relief { get; }
+        public LandformType[] Landforms { get; }
         public BiomeType[] Biomes { get; }
         public short[] Temperature { get; }
         public ushort[] Rainfall { get; }
@@ -41,6 +46,7 @@ public static partial class WorldGenerator
             Elevation = useWorldArrays ? world.Elevation : new short[Count];
             Water = useWorldArrays ? world.Water : new WaterType[Count];
             Relief = useWorldArrays ? world.Relief : new ReliefType[Count];
+            Landforms = useWorldArrays ? world.Landforms : new LandformType[Count];
             Biomes = useWorldArrays ? world.Biomes : new BiomeType[Count];
             Temperature = useWorldArrays ? world.Temperature : new short[Count];
             Rainfall = useWorldArrays ? world.Rainfall : new ushort[Count];
@@ -89,7 +95,12 @@ public static partial class WorldGenerator
                 Array.Copy(Water, source, world.Water, destination, region.Width);
                 Array.Copy(Elevation, source, world.Elevation, destination, region.Width);
                 if (stage >= GenerationStage.Relief)
+                {
                     Array.Copy(Relief, source, world.Relief, destination, region.Width);
+                    for (int offset = 0; offset < region.Width; offset++)
+                        if (Writes(region.Column + offset, row, destination + offset, HexLocks.Landform))
+                            world.Landforms[destination + offset] = Landforms[source + offset];
+                }
                 if (stage == GenerationStage.Terrain)
                 {
                     Array.Copy(Temperature, source, world.Temperature, destination, region.Width);

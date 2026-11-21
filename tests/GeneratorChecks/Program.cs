@@ -6,6 +6,33 @@ using System.Numerics;
 using System.Collections.Immutable;
 using Mapmaker.Core;
 
+try
+{
+    RunChecks(args);
+    return 0;
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine(ex);
+    return 1;
+}
+
+static void RunChecks(string[] args)
+{
+WorldGenerator.CheckExtendedWorldFormat();
+if (args.Contains("--format-only")) return;
+WorldGenerator.CheckBiomeMajority();
+if (args.Contains("--majority-only")) return;
+WorldGenerator.CheckSwampMargins();
+if (args.Contains("--swamp-only")) return;
+WorldGenerator.CheckClimateAndHeights();
+if (args.Contains("--climate-height-only")) return;
+WorldGenerator.CheckWaterMargins();
+if (args.Contains("--water-only")) return;
+WorldGenerator.CheckReliefContours();
+if (args.Contains("--contours-only")) return;
+WorldGenerator.CheckTerrainClassification();
+if (args.Contains("--landforms-only")) return;
 WorldGenerator.CheckBiomeConsolidation();
 WorldGenerator.CheckWorldExtent();
 WorldGenerator.CheckFullAtlas();
@@ -87,6 +114,8 @@ foreach (bool wrap in new[] { false, true })
     Console.WriteLine($"PASS: wrap={wrap}, deterministic world, tectonics, regional regeneration and locks; contacts={first.Tectonics.Contacts.Length}");
 }
 Console.WriteLine("All generator checks passed.");
+}
+
 static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
 
 namespace Mapmaker.Core

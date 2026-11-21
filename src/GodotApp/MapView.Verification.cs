@@ -884,15 +884,15 @@ public partial class MapView
     private static void VerifyDetailIcons(WorldData world)
     {
         GlobalDataTextures.Buffers data = GlobalDataTextures.BuildBuffers(world);
-        byte[] icons = MapDetailIcons.Build(world, data.Terrain);
-        var used = new HashSet<byte>();
+        uint[] icons = MapDetailIcons.Build(world, data.Surface);
+        var used = new HashSet<ushort>();
         int primary = 0;
         int close = 0;
         for (int i = 0; i < world.Count; i++)
         {
-            byte packed = data.Details[i * 2];
+            uint packed = (uint)(data.Details[i * 4] | data.Details[i * 4 + 1] << 8 | data.Details[i * 4 + 2] << 16);
             Require(packed == icons[i], "O posicionamento dos ícones deve reproduzir a seed.");
-            byte icon = (byte)(packed & MapDetailIcons.IconIdMask);
+            ushort icon = (ushort)(packed & MapDetailIcons.IconIdMask);
             if (icon == 0)
             {
                 Require(packed == 0, "Ícone ausente com estado de zoom.");
@@ -904,7 +904,7 @@ public partial class MapView
             else
             {
                 primary++;
-                Require((data.Terrain[i * 4 + 3] & 0xc0) == 0, "A vista afastada precisa manter o hex livre.");
+                Require((data.Surface[i * 4 + 3] & 0xc0) == 0, "A vista afastada precisa manter o hex livre.");
             }
             used.Add(icon);
         }
@@ -915,9 +915,9 @@ public partial class MapView
 
     private static int FindSharedDetail(GlobalDataTextures.Buffers data)
     {
-        for (int i = 0; i < data.Details.Length / 2; i++)
+        for (int i = 0; i < data.Details.Length / 4; i++)
         {
-            if ((data.Details[i * 2] & MapDetailIcons.CloseZoomFlag) != 0 && (data.Terrain[i * 4 + 3] & 0xc0) == 0xc0)
+            if ((data.Details[i * 4 + 2] & 1) != 0 && (data.Surface[i * 4 + 3] & 0xc0) == 0xc0)
                 return i;
         }
         return -1;
@@ -935,7 +935,7 @@ public partial class MapView
             foreach (var (col, row) in land)
                 world.Water[row * width + col] = WaterType.None;
 
-            byte[] data = OceanShelf.BuildDetails(world, new byte[world.Count]);
+            byte[] data = OceanShelf.BuildDetails(world, new uint[world.Count]);
             for (int row = 0; row < height; row++)
             for (int col = 0; col < width; col++)
             {
@@ -949,7 +949,7 @@ public partial class MapView
                     squared = Math.Min(squared, dx * dx + 3 * dy * dy);
                 }
                 int expected = Math.Min(255, (int)MathF.Round(MathF.Sqrt(squared) * 255f / 28));
-                Require(data[(row * width + col) * 2 + 1] == expected, "Distância inválida na plataforma costeira.");
+                Require(data[(row * width + col) * 4 + 3] == expected, "Distância inválida na plataforma costeira.");
             }
         }
     }

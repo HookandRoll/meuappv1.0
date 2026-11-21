@@ -23,12 +23,12 @@ internal sealed class EditorPreview : IDisposable
         _cellsPerBand = _width * WorldData.ChunkSize;
         _bands = new byte[world.Chunks.Rows][];
         for (int band = 0; band < _bands.Length; band++)
-            _bands[band] = new byte[_cellsPerBand * 4];
+            _bands[band] = new byte[_cellsPerBand * 4 * MapRenderFormat.PreviewPlanes];
         Rebuild(world);
 
         var images = new Godot.Collections.Array<Image>();
         foreach (byte[] pixels in _bands)
-            images.Add(Image.CreateFromData(_width, WorldData.ChunkSize, false, Image.Format.Rgba8, pixels));
+            images.Add(Image.CreateFromData(_width, WorldData.ChunkSize * MapRenderFormat.PreviewPlanes, false, Image.Format.Rgba8, pixels));
         Texture = new Texture2DArray();
         Error error = Texture.CreateFromImages(images);
         foreach (Image image in images)
@@ -38,7 +38,7 @@ internal sealed class EditorPreview : IDisposable
             Texture.Dispose();
             throw new InvalidOperationException($"Não foi possível criar a prévia da edição: {error}.");
         }
-        _scratch = Image.CreateEmpty(_width, WorldData.ChunkSize, false, Image.Format.Rgba8);
+        _scratch = Image.CreateEmpty(_width, WorldData.ChunkSize * MapRenderFormat.PreviewPlanes, false, Image.Format.Rgba8);
         _dirtyBands.Clear();
     }
 
@@ -53,20 +53,17 @@ internal sealed class EditorPreview : IDisposable
         int band = cell / _cellsPerBand;
         int i = cell % _cellsPerBand * 4;
         byte[] pixels = _bands[band];
-        ushort elevation = (ushort)(world.Elevation[cell] - short.MinValue);
-        byte low = (byte)elevation;
-        byte high = (byte)(elevation >> 8);
-        byte biome = (byte)world.Biomes[cell];
-        var locks = (HexLocks)world.LockMask[cell];
-        int lockLevel = (locks & HexLocks.All) == HexLocks.All ? 2 : locks == 0 ? 0 : 1;
-        byte surface = (byte)((int)world.Water[cell] | (int)world.Relief[cell] << 2 | lockLevel << 6);
-        if (pixels[i] == low && pixels[i + 1] == high && pixels[i + 2] == biome && pixels[i + 3] == surface)
-            return;
-
-        pixels[i] = low;
-        pixels[i + 1] = high;
-        pixels[i + 2] = biome;
-        pixels[i + 3] = surface;
+        Span<byte> planes = stackalloc byte[4 * MapRenderFormat.PreviewPlanes];
+        MapRenderFormat.WriteHex(world, cell, planes[..4], planes.Slice(4, 4), planes.Slice(8, 4), planes.Slice(12, 4), planes.Slice(16, 4));
+        bool changed = false;
+        for (int plane = 0; plane < MapRenderFormat.PreviewPlanes; plane++)
+        {
+            Span<byte> target = pixels.AsSpan(plane * _cellsPerBand * 4 + i, 4);
+            var source = planes.Slice(plane * 4, 4);
+            if (target.SequenceEqual(source)) continue;
+            source.CopyTo(target); changed = true;
+        }
+        if (!changed) return;
         _dirtyBands.Add(band);
     }
 
@@ -78,7 +75,7 @@ internal sealed class EditorPreview : IDisposable
 
         foreach (int band in _dirtyBands)
         {
-            _scratch.SetData(_width, WorldData.ChunkSize, false, Image.Format.Rgba8, _bands[band]);
+            _scratch.SetData(_width, WorldData.ChunkSize * MapRenderFormat.PreviewPlanes, false, Image.Format.Rgba8, _bands[band]);
             Texture.UpdateLayer(_scratch, band);
         }
         _dirtyBands.Clear();

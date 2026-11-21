@@ -49,10 +49,24 @@ public partial class MapView : Node2D
         string? benchmarkSize = Array.Find(args, arg => arg.StartsWith("--benchmark-size="));
         if (Array.IndexOf(args, "--ocean-frame-review") >= 0)
             Callable.From(RunOceanFrameReview).CallDeferred();
+        else if (Array.IndexOf(args, "--river-clearance-review") >= 0)
+            Callable.From(RunRiverClearanceReview).CallDeferred();
+        else if (Array.IndexOf(args, "--terrain-classification-review") >= 0)
+            Callable.From(RunTerrainClassificationReview).CallDeferred();
+        else if (Array.IndexOf(args, "--water-shapes-review") >= 0)
+            Callable.From(RunWaterShapesReview).CallDeferred();
+        else if (Array.IndexOf(args, "--boundary-review") >= 0)
+            Callable.From(RunBoundaryReview).CallDeferred();
+        else if (Array.IndexOf(args, "--biome-majority-review") >= 0)
+            Callable.From(RunBiomeMajorityReview).CallDeferred();
+        else if (Array.IndexOf(args, "--verify-map-format") >= 0)
+            Callable.From(VerifyMapFormatOnGpu).CallDeferred();
         else if (benchmarkSize is not null)
             Callable.From(() => RunSizeBenchmark(int.Parse(benchmarkSize.Split('=')[1]))).CallDeferred();
         else if (Array.IndexOf(args, "--climate-relief-review") >= 0)
             Callable.From(RunClimateReliefReview).CallDeferred();
+        else if (Array.IndexOf(args, "--climate-height-review") >= 0)
+            Callable.From(RunClimateHeightReview).CallDeferred();
         else if (Array.IndexOf(args, "--validate-regions-current") >= 0)
             Callable.From(() => RunV29RegionalValidation(WorldGenerator.Version)).CallDeferred();
         else if (Array.IndexOf(args, "--validate-editor-current") >= 0)
@@ -170,6 +184,9 @@ public partial class MapView : Node2D
         ReplaceTerrainTextures(world, stage == GenerationStage.Blank ? null : buffers ?? GlobalDataTextures.BuildBuffers(world));
         _material.SetShaderParameter("map_size", new Vector2I(world.Width, world.Height));
         _material.SetShaderParameter("stage", (int)stage);
+        _material.SetShaderParameter("natural_water_shapes", world.Manifest.GeneratorVersion >= 42);
+        _material.SetShaderParameter("boundary_noise_offset", BoundaryNoiseOffset(world));
+        _material.SetShaderParameter("elevation_color_max", world.Manifest.GeneratorVersion >= 43 ? 8000f : 4400f);
         _material.SetShaderParameter("horizontal_wrap", world.Manifest.HorizontalWrap);
 
         Vector2 origin = new(-HexGrid.Root3 * 0.5f, -1f);
@@ -221,8 +238,12 @@ public partial class MapView : Node2D
         _textures = buffers.HasValue ? new GlobalDataTextures(world, buffers.Value) : null;
         _material.SetShaderParameter("terrain_data", _textures is null ? default : Variant.From(_textures.Terrain));
         _material.SetShaderParameter("climate_data", _textures is null ? default : Variant.From(_textures.Climate));
+        _material.SetShaderParameter("map_attributes", _textures is null ? default : Variant.From(_textures.Attributes));
+        _material.SetShaderParameter("feature_data", _textures is null ? default : Variant.From(_textures.Features));
+        _material.SetShaderParameter("has_feature_data", _textures?.HasFeatures ?? false);
         _material.SetShaderParameter("detail_data", _textures is null ? default : Variant.From(_textures.Details));
-        if (_textures is not null) _riverOverlay.BindTerrain(_textures.Terrain, world);
+        if (_textures is not null) _riverOverlay.BindTerrain(_textures.Terrain, _textures.Attributes, world);
+        _riverOverlay.BindClearance(_material);
         previous?.Dispose();
     }
 
@@ -283,6 +304,7 @@ public partial class MapView : Node2D
             };
         if (stage >= GenerationStage.Relief)
             label += $"  ·  {ReliefLabel(world.Relief[i])}  ·  {world.Elevation[i]} m";
+        label += GeographyDescription(world, i);
         if (stage >= GenerationStage.Terrain)
             label += $"  ·  {BiomeLabel(world.Biomes[i])}  ·  {world.Temperature[i] * 0.1:F1} °C  ·  {world.Rainfall[i]} mm/ano";
         label += $"  ·  Locks: {MapEditorPanel.LockLabel((HexLocks)world.LockMask[i])}";
@@ -309,7 +331,7 @@ public partial class MapView : Node2D
     internal static string ReliefLabel(ReliefType relief) => relief switch
     {
         ReliefType.Rolling => "Ondulado", ReliefType.Hills => "Morros",
-        ReliefType.Mountains => "Montanhas", ReliefType.Peak => "Picos", _ => "Plano"
+        ReliefType.Mountains => "Montanhas", ReliefType.Peak => "Picos", ReliefType.Flat => "Plano", _ => $"Relevo #{(ushort)relief}"
     };
 
     internal static string BiomeLabel(BiomeType biome) => biome switch
@@ -317,8 +339,31 @@ public partial class MapView : Node2D
         BiomeType.Beach => "Praia", BiomeType.Grassland => "Campo",
         BiomeType.TemperateForest => "Floresta temperada", BiomeType.Rainforest => "Floresta tropical",
         BiomeType.Savanna => "Savana", BiomeType.Steppe => "Estepe", BiomeType.Desert => "Deserto",
-        BiomeType.Taiga => "Taiga", BiomeType.Tundra => "Tundra", BiomeType.Alpine => "Alpino", _ => "Sem bioma terrestre"
+        BiomeType.Taiga => "Taiga", BiomeType.Tundra => "Tundra", BiomeType.Alpine => "Alpino", BiomeType.Swamp => "Pântano arborizado", BiomeType.None => "Sem bioma terrestre", _ => $"Bioma #{(ushort)biome}"
     };
+
+    internal static string LandformLabel(LandformType landform) => landform switch
+    {
+        LandformType.None => "Sem classificação", LandformType.Plain => "Planície",
+        LandformType.RollingPlain => "Planície ondulada", LandformType.Plateau => "Planalto",
+        LandformType.Escarpment => "Escarpa / Serra", LandformType.Hills => "Morros",
+        LandformType.Mountains => "Montanhas", LandformType.Peak => "Pico", LandformType.Valley => "Vale / Depressão",
+        LandformType.Slope => "Encosta", LandformType.Foothills => "Sopé de serra",
+        _ => $"Forma geográfica #{(ushort)landform}"
+    };
+
+    internal static string GeographyDescription(WorldData world, int cell)
+    {
+        string result = world.Landforms[cell] == LandformType.None ? "" : $"  ·  {LandformLabel(world.Landforms[cell])}";
+        GeographicFeatures features = world.Features[cell];
+        if (features == GeographicFeatures.None) return result;
+        var names = new System.Collections.Generic.List<string>();
+        foreach (var (feature, name) in new[] { (GeographicFeatures.Volcano, "Vulcão"), (GeographicFeatures.Escarpment, "Escarpa"),
+            (GeographicFeatures.Canyon, "Cânion"), (GeographicFeatures.BadlandRocks, "Mesas rochosas"), (GeographicFeatures.SeaIce, "Gelo marinho") })
+            if ((features & feature) != 0) { names.Add(name); features &= ~feature; }
+        if (features != 0) names.Add($"Features 0x{(ulong)features:X}");
+        return result + "  ·  " + string.Join(", ", names);
+    }
 
     private void SetLayer(int index)
     {

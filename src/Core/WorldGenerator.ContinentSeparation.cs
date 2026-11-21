@@ -101,18 +101,23 @@ public static partial class WorldGenerator
             // Give the passages visible sea width rather than a one-hex line
             // that reads as a river at world scale. Preserve every fixed core.
             int halfWidth = Math.Max(1, _height / 192);
-            var reach = new byte[water.Length];
-            for (int i = 0; i < channel.Length; i++)
-                if (channel[i]) { reach[i] = 1; queue.Enqueue(i); }
-            while (queue.TryDequeue(out int i))
+            if (_manifest.GeneratorVersion >= 42)
+                WidenNaturalChannels(channel, fixedCore, halfWidth);
+            else
             {
-                if (reach[i] > halfWidth) continue;
-                Hex hex = HexAt(i);
-                for (int d = 0; d < 6; d++)
+                var reach = new byte[water.Length];
+                for (int i = 0; i < channel.Length; i++)
+                    if (channel[i]) { reach[i] = 1; queue.Enqueue(i); }
+                while (queue.TryDequeue(out int i))
                 {
-                    int n = Neighbor(hex, d);
-                    if (n < 0 || reach[n] != 0 || fixedCore[n]) continue;
-                    reach[n] = (byte)(reach[i] + 1); channel[n] = true; queue.Enqueue(n);
+                    if (reach[i] > halfWidth) continue;
+                    Hex hex = HexAt(i);
+                    for (int d = 0; d < 6; d++)
+                    {
+                        int n = Neighbor(hex, d);
+                        if (n < 0 || reach[n] != 0 || fixedCore[n]) continue;
+                        reach[n] = (byte)(reach[i] + 1); channel[n] = true; queue.Enqueue(n);
+                    }
                 }
             }
             int removed = 0;

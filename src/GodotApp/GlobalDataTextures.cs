@@ -10,52 +10,56 @@ internal sealed class GlobalDataTextures : IDisposable
     private readonly Image _terrainImage;
     private readonly Image _climateImage;
     private readonly Image _detailImage;
+    public Texture2DArray Attributes { get; }
+    public Texture2DArray Features { get; }
+    public bool HasFeatures { get; }
     public ImageTexture Terrain { get; }
     public ImageTexture Climate { get; }
     public ImageTexture Details { get; }
 
-    internal readonly record struct Buffers(byte[] Terrain, byte[] Climate, byte[] Details);
+    internal readonly record struct Buffers(byte[] Terrain, byte[] Surface, byte[] Geography, byte[]? FeatureLow, byte[]? FeatureHigh, byte[] Climate, byte[] Details);
 
     public GlobalDataTextures(WorldData world, Buffers buffers)
     {
         _terrainImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rgba8, buffers.Terrain);
         _climateImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rgba8, buffers.Climate);
-        _detailImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rg8, buffers.Details);
+        _detailImage = Image.CreateFromData(world.Width, world.Height, false, Image.Format.Rgba8, buffers.Details);
         Terrain = ImageTexture.CreateFromImage(_terrainImage);
         Climate = ImageTexture.CreateFromImage(_climateImage);
         Details = ImageTexture.CreateFromImage(_detailImage);
+        Attributes = CreateArray(world.Width, world.Height, buffers.Surface, buffers.Geography);
+        HasFeatures = buffers.FeatureLow is not null;
+        Features = HasFeatures ? CreateArray(world.Width, world.Height, buffers.FeatureLow!, buffers.FeatureHigh!)
+            : CreateArray(1, 1, new byte[4], new byte[4]);
     }
 
     public static Buffers BuildBuffers(WorldData world)
     {
-        byte[] terrain = new byte[world.Width * world.Height * 4];
-        byte[] climate = new byte[terrain.Length];
+        byte[] terrain = new byte[world.Count * 4];
+        byte[] surface = new byte[terrain.Length], geography = new byte[terrain.Length], climate = new byte[terrain.Length];
+        bool hasFeatures = Array.Exists(world.Features, feature => feature != GeographicFeatures.None);
+        byte[]? featureLow = hasFeatures ? new byte[terrain.Length] : null, featureHigh = hasFeatures ? new byte[terrain.Length] : null;
+        Span<byte> unusedLow = stackalloc byte[4], unusedHigh = stackalloc byte[4];
         for (int cell = 0; cell < world.Count; cell++)
         {
             int index = cell * 4;
-            Pack(terrain, index, (ushort)(world.Elevation[cell] - short.MinValue));
-            terrain[index + 2] = (byte)world.Biomes[cell];
-            // Two bits for water, three for relief, one for snow and one each for relief and vegetation symbols.
-            int surface = (int)world.Water[cell] | ((int)world.Relief[cell] << 2);
-            if (world.Manifest.Generation.Stage == GenerationStage.Terrain && world.Relief[cell] == ReliefType.Peak &&
-                (world.Temperature[cell] <= 0 || world.Biomes[cell] == BiomeType.Alpine))
-                surface |= 1 << 5;
-            terrain[index + 3] = (byte)surface;
+            MapRenderFormat.WriteHex(world, cell, terrain.AsSpan(index, 4), surface.AsSpan(index, 4), geography.AsSpan(index, 4),
+                featureLow is null ? unusedLow : featureLow.AsSpan(index, 4), featureHigh is null ? unusedHigh : featureHigh.AsSpan(index, 4));
             Pack(climate, index, (ushort)(world.Temperature[cell] - short.MinValue));
             Pack(climate, index + 2, world.Rainfall[cell]);
         }
         if (world.Manifest.Generation.Stage >= GenerationStage.Relief)
-            MarkReliefSymbols(world, terrain);
+            MarkReliefSymbols(world, surface);
         if (world.Manifest.Generation.Stage == GenerationStage.Terrain)
-            MarkVegetationSymbols(world, terrain);
-        MarkTightShorelines(world, terrain);
+            MarkVegetationSymbols(world, surface);
+        MarkTightShorelines(world, geography);
 
-        return new Buffers(terrain, climate, OceanShelf.BuildDetails(world, MapDetailIcons.Build(world, terrain)));
+        return new Buffers(terrain, surface, geography, featureLow, featureHigh, climate, OceanShelf.BuildDetails(world, MapDetailIcons.Build(world, surface)));
     }
 
     private static void MarkTightShorelines(WorldData world, byte[] terrain)
     {
-        // The low four bits hold the biome ID. The next two hold local shore crowding.
+        // Shore metadata has its own byte; no biome ID bits are overwritten.
         // Derive the visual shoreline from water so it crosses the edge of an edit without writing to adjacent hexes.
         for (int index = 0; index < world.Count; index++)
         {
@@ -77,7 +81,7 @@ internal sealed class GlobalDataTextures : IDisposable
                 }
             }
             if (coast)
-                terrain[index * 4 + 2] |= (byte)(ShoreCrowding(landNeighbors) << 4);
+                terrain[index * 4 + 2] |= (byte)ShoreCrowding(landNeighbors);
         }
     }
 
@@ -91,7 +95,7 @@ internal sealed class GlobalDataTextures : IDisposable
             if (neighbor < 0 || world.Water[neighbor] == WaterType.Ocean)
                 oceanNeighbors++;
         }
-        terrain[index * 4 + 2] |= (byte)(ShoreCrowding(oceanNeighbors) << 4);
+        terrain[index * 4 + 2] |= (byte)ShoreCrowding(oceanNeighbors);
     }
 
     private static int ShoreCrowding(int neighbors) => neighbors <= 2 ? 3 : neighbors == 3 ? 1 : 0;
@@ -108,9 +112,25 @@ internal sealed class GlobalDataTextures : IDisposable
         Terrain.Dispose();
         Climate.Dispose();
         Details.Dispose();
+        Attributes.Dispose();
+        Features.Dispose();
         _terrainImage.Dispose();
         _climateImage.Dispose();
         _detailImage.Dispose();
+    }
+
+    private static Texture2DArray CreateArray(int width, int height, params byte[][] planes)
+    {
+        var images = new Godot.Collections.Array<Image>();
+        var texture = new Texture2DArray();
+        try
+        {
+            foreach (var plane in planes) images.Add(Image.CreateFromData(width, height, false, Image.Format.Rgba8, plane));
+            if (texture.CreateFromImages(images) != Error.Ok) throw new InvalidOperationException("Falha ao criar atributos do mapa.");
+            return texture;
+        }
+        catch { texture.Dispose(); throw; }
+        finally { foreach (var image in images) image.Dispose(); }
     }
 
     private static void Pack(byte[] bytes, int index, ushort value)
@@ -123,23 +143,13 @@ internal sealed class GlobalDataTextures : IDisposable
     {
         for (int cell = 0; cell < world.Count; cell++)
         {
-            if (world.Water[cell] != WaterType.None)
-                continue;
-            ReliefType relief = world.Relief[cell];
-            if (relief is <= ReliefType.Flat or > ReliefType.Peak)
-                continue;
-
-            uint rank = StableRank(cell ^ world.Manifest.Seed);
-            bool place = relief switch
-            {
-                ReliefType.Peak => (rank % 5u) < 3u,       // ~60% large overlapping high peaks
-                ReliefType.Mountains => (rank % 9u) < 5u,  // ~56% bold overlapping mountain ridges
-                ReliefType.Hills => (rank % 5u) < 2u,      // ~40% clustered rocky hills
-                ReliefType.Rolling => (rank % 7u) == 0u,   // ~14% rolling downs
-                _ => false
-            };
-            if (place)
-                terrain[cell * 4 + 3] |= 1 << 6;
+            byte symbols = ReliefContours.Symbol(world, cell);
+            terrain[cell * 4 + 3] |= symbols;
+            if ((symbols & MapRenderFormat.MassifSymbol) == 0) continue;
+            ReliefType visual = ReliefContours.VisualRelief(world, cell);
+            Pack(terrain, cell * 4 + 1, (ushort)visual);
+            if (world.Elevation[cell] >= 3200 && (world.Temperature[cell] <= 0 || world.Biomes[cell] == BiomeType.Alpine))
+                terrain[cell * 4 + 3] |= MapRenderFormat.Snow;
         }
     }
 
@@ -166,6 +176,7 @@ internal sealed class GlobalDataTextures : IDisposable
                     (WaterType.None, BiomeType.TemperateForest) => 0.84f,
                     (WaterType.None, BiomeType.Rainforest) => 0.88f,
                     (WaterType.None, BiomeType.Taiga) => 0.82f,
+                    (WaterType.None, BiomeType.Swamp) => 0.80f,
                     (WaterType.None, BiomeType.Savanna) => 0.30f,
                     (WaterType.None, BiomeType.Desert) => 0.14f,
                     (WaterType.Wetland, _) => 0.46f,

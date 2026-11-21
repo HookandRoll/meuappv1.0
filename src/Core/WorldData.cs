@@ -8,16 +8,33 @@ public enum TerrainAlgorithm { Fractal, LandmassCenters, ContinentalSculpt }
 public enum GenerationStage { Blank, Land, Relief, Terrain }
 public enum MapExtent { Region, World }
 public enum WaterType : byte { None, Ocean, Lake, Wetland }
-public enum ReliefType : byte { Flat, Rolling, Hills, Mountains, Peak }
-public enum BiomeType : byte
+public enum ReliefType : ushort { Flat, Rolling, Hills, Mountains, Peak }
+public enum BiomeType : ushort
 {
-    None, Beach, Grassland, TemperateForest, Rainforest, Savanna, Steppe, Desert, Taiga, Tundra, Alpine
+    None, Beach, Grassland, TemperateForest, Rainforest, Savanna, Steppe, Desert, Taiga, Tundra, Alpine, Swamp
+}
+
+// Independent classifications: a forest can occupy a plateau with a canyon.
+public enum LandformType : ushort
+{
+    None, Plain, RollingPlain, Plateau, Escarpment, Hills, Mountains, Peak, Valley, Slope, Foothills
+}
+
+[Flags]
+public enum GeographicFeatures : ulong
+{
+    None = 0,
+    Volcano = 1UL << 0,
+    Escarpment = 1UL << 1,
+    Canyon = 1UL << 2,
+    BadlandRocks = 1UL << 3,
+    SeaIce = 1UL << 4
 }
 
 public static class Biomes
 {
     public static bool IsForest(BiomeType type) =>
-        type is BiomeType.TemperateForest or BiomeType.Rainforest or BiomeType.Taiga;
+        type is BiomeType.TemperateForest or BiomeType.Rainforest or BiomeType.Taiga or BiomeType.Swamp;
 }
 
 public sealed record GenerationSettings(
@@ -47,6 +64,8 @@ public sealed class WorldData
     public WaterType[] Water { get; }
     public ReliefType[] Relief { get; }
     public BiomeType[] Biomes { get; }
+    public LandformType[] Landforms { get; }
+    public GeographicFeatures[] Features { get; }
     public short[] Temperature { get; }
     public ushort[] Rainfall { get; }
     public ushort[] RoadEdges { get; }
@@ -71,6 +90,8 @@ public sealed class WorldData
         Water = new WaterType[count];
         Relief = new ReliefType[count];
         Biomes = new BiomeType[count];
+        Landforms = new LandformType[count];
+        Features = new GeographicFeatures[count];
         Temperature = new short[count];
         Rainfall = new ushort[count];
         RoadEdges = new ushort[count];
@@ -127,6 +148,8 @@ public sealed class WorldData
         Water.CopyTo(copy.Water, 0);
         Relief.CopyTo(copy.Relief, 0);
         Biomes.CopyTo(copy.Biomes, 0);
+        Landforms.CopyTo(copy.Landforms, 0);
+        Features.CopyTo(copy.Features, 0);
         Temperature.CopyTo(copy.Temperature, 0);
         Rainfall.CopyTo(copy.Rainfall, 0);
         RoadEdges.CopyTo(copy.RoadEdges, 0);

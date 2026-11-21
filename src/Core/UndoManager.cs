@@ -18,7 +18,9 @@ public enum HexLocks : ushort
     Roads = 1 << 6,
     Rivers = 1 << 7,
     Flags = 1 << 8,
-    All = Biome | Relief | Water | Elevation | Temperature | Rainfall | Roads | Rivers | Flags
+    Landform = 1 << 9,
+    Features = 1 << 10,
+    All = Biome | Relief | Water | Elevation | Temperature | Rainfall | Roads | Rivers | Flags | Landform | Features
 }
 
 public enum RegenerationMode { Everything, KeepWater, KeepWaterAndElevation }
@@ -26,11 +28,12 @@ public enum RegenerationMode { Everything, KeepWater, KeepWaterAndElevation }
 internal sealed class UndoManager
 {
     private readonly record struct Cell(short Elevation, short Temperature, ushort Rainfall,
-        ushort Roads, ushort Rivers, ushort Locks, WaterType Water, ReliefType Relief, BiomeType Biome, byte Flags)
+        ushort Roads, ushort Rivers, ushort Locks, WaterType Water, ReliefType Relief, BiomeType Biome, byte Flags,
+        LandformType Landform, GeographicFeatures Features)
     {
         internal static Cell Read(WorldData world, int i) => new(world.Elevation[i], world.Temperature[i],
             world.Rainfall[i], world.RoadEdges[i], world.RiverEdges[i], world.LockMask[i],
-            world.Water[i], world.Relief[i], world.Biomes[i], world.Flags[i]);
+            world.Water[i], world.Relief[i], world.Biomes[i], world.Flags[i], world.Landforms[i], world.Features[i]);
 
         internal void Restore(WorldData world, int i)
         {
@@ -44,6 +47,8 @@ internal sealed class UndoManager
             world.RiverEdges[i] = Rivers;
             world.Flags[i] = Flags;
             world.LockMask[i] = Locks;
+            world.Landforms[i] = Landform;
+            world.Features[i] = Features;
         }
     }
 
@@ -145,7 +150,7 @@ internal sealed class UndoManager
         _undo.AddLast(new Command(before.ToArray(), after.ToArray(), Revision, previous, sparseBefore, _world.SparseEntities));
         int chunkPairs = _undo.Sum(command => command.Before.Length);
         while (_undo.Count > 1 && (_undo.Count > Limit ||
-            chunkPairs * (2L * WorldData.ChunkSize * WorldData.ChunkSize * 16) > SnapshotBudget))
+            chunkPairs * (2L * WorldData.ChunkSize * WorldData.ChunkSize * System.Runtime.CompilerServices.Unsafe.SizeOf<Cell>()) > SnapshotBudget))
         {
             chunkPairs -= _undo.First!.Value.Before.Length;
             _undo.RemoveFirst();

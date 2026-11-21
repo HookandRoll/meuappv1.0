@@ -91,7 +91,7 @@ public partial class MapView
             GD.Print($"EDITOR v{version} integrated paint/locks/undo/redo/save/cancel/reopen passed");
             int checks = 0;
             foreach (bool wrap in new[] { false, true })
-            foreach (HexLocks field in new[] { HexLocks.None }.Concat(V29Fields))
+            foreach (HexLocks field in new[] { HexLocks.None }.Concat(version >= 41 ? V29Fields.Append(HexLocks.Landform) : V29Fields))
             foreach (RegenerationMode mode in field == HexLocks.None ? Enum.GetValues<RegenerationMode>() : new[] { RegenerationMode.Everything })
             {
                 var manifest = TestManifest(128, 64, TerrainAlgorithm.ContinentalSculpt) with { GeneratorVersion = version, HorizontalWrap = wrap };
@@ -180,6 +180,7 @@ public partial class MapView
             case HexLocks.Temperature: world.Temperature[cell] = short.MinValue; break;
             case HexLocks.Rainfall: world.Rainfall[cell] = ushort.MaxValue; break;
             case HexLocks.Biome: world.Biomes[cell] = (BiomeType)255; break;
+            case HexLocks.Landform: world.Landforms[cell] = (LandformType)65535; break;
         }
     }
 
@@ -187,7 +188,8 @@ public partial class MapView
     {
         HexLocks.Water => a.Water == b.Water, HexLocks.Elevation => a.Elevation == b.Elevation,
         HexLocks.Relief => a.Relief == b.Relief, HexLocks.Temperature => a.Temperature == b.Temperature,
-        HexLocks.Rainfall => a.Rainfall == b.Rainfall, HexLocks.Biome => a.Biome == b.Biome, _ => false
+        HexLocks.Rainfall => a.Rainfall == b.Rainfall, HexLocks.Biome => a.Biome == b.Biome,
+        HexLocks.Landform => a.Landform == b.Landform, _ => false
     };
 
     private static DenseCell V29WithoutField(DenseCell cell, HexLocks field) => field switch
@@ -196,6 +198,7 @@ public partial class MapView
         HexLocks.Water => cell with { Water = 0, Flags = (byte)(cell.Flags & ~WorldData.CoastFlag) },
         HexLocks.Elevation => cell with { Elevation = 0 }, HexLocks.Relief => cell with { Relief = 0 },
         HexLocks.Temperature => cell with { Temperature = 0 }, HexLocks.Rainfall => cell with { Rainfall = 0 },
-        HexLocks.Biome => cell with { Biome = 0 }, HexLocks.Rivers => cell with { Rivers = 0 }, _ => cell
+        HexLocks.Biome => cell with { Biome = 0 }, HexLocks.Rivers => cell with { Rivers = 0 },
+        HexLocks.Landform => cell with { Landform = 0 }, _ => cell
     };
 }

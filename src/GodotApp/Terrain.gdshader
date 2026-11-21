@@ -1,6 +1,17 @@
 shader_type canvas_item;
 render_mode unshaded;
 
+uniform sampler2DArray map_attributes : filter_nearest, repeat_disable;
+uniform sampler2DArray feature_data : filter_nearest, repeat_disable;
+uniform sampler2DArray art_catalog : filter_nearest, repeat_disable;
+uniform bool has_feature_data = false;
+uniform sampler2D river_clearance : filter_linear, repeat_disable;
+uniform bool has_river_clearance = false;
+uniform bool natural_water_shapes = false;
+uniform float elevation_color_max = 4400.0;
+uniform vec2 boundary_noise_offset = vec2(0.0);
+// Internal renderer round-trip check; zero during normal use.
+uniform int format_probe = 0;
 uniform sampler2D terrain_data : filter_nearest, repeat_disable;
 uniform sampler2D climate_data : filter_nearest, repeat_disable;
 uniform sampler2D detail_data : filter_nearest, repeat_disable;
@@ -124,6 +135,7 @@ float noise_sample(vec2 cell, float period) {
 }
 
 float coast_noise(vec2 position, float frequency) {
+    position += boundary_noise_offset;
     float span = float(map_size.x) * ROOT3;
     float period = max(1.0, round(span * frequency));
     vec2 p = position * vec2(horizontal_wrap ? period / span : frequency, frequency);
@@ -135,10 +147,54 @@ float coast_noise(vec2 position, float frequency) {
         f.y) * 2.0 - 1.0;
 }
 
+#include "res://src/GodotApp/BoundaryNoise.gdshaderinc"
+
+// Renderer schema v2: independent IDs and metadata, decoded once per sample.
+struct TerrainSample {
+    vec2 height;
+    int biome;
+    int water;
+    int relief;
+    int symbols;
+    float crowding;
+    int landform;
+};
+
+float unpack16(vec2 bytes) {
+    vec2 integer_bytes = round(bytes * 255.0);
+    return dot(integer_bytes, vec2(1.0, 256.0));
+}
+
+TerrainSample sea_sample() {
+    return TerrainSample(vec2(72.0, 116.0) / 255.0, 0, 1, 0, 0, 0.0, 0);
+}
+
+TerrainSample load_sample(ivec2 offset) {
+    vec4 terrain = texelFetch(terrain_data, offset, 0);
+    vec4 surface = texelFetch(map_attributes, ivec3(offset, 0), 0);
+    vec4 geography = texelFetch(map_attributes, ivec3(offset, 1), 0);
+    return TerrainSample(terrain.rg, int(unpack16(terrain.ba)), int(round(surface.r * 255.0)),
+        int(unpack16(surface.gb)), int(round(surface.a * 255.0)), round(geography.b * 255.0) / 3.0, int(unpack16(geography.rg)));
+}
+
+uvec2 geographic_features(ivec2 hex) {
+    if (!has_feature_data) return uvec2(0u);
+    ivec2 offset = data_offset(hex);
+    if (!inside(offset)) return uvec2(0u);
+    uvec4 low = uvec4(round(texelFetch(feature_data, ivec3(offset, 0), 0) * 255.0));
+    uvec4 high = uvec4(round(texelFetch(feature_data, ivec3(offset, 1), 0) * 255.0));
+    return uvec2(low.x | (low.y << 8u) | (low.z << 16u) | (low.w << 24u),
+        high.x | (high.y << 8u) | (high.z << 16u) | (high.w << 24u));
+}
+
+vec4 catalog_entry(int id, int kind) {
+    return texelFetch(art_catalog, ivec3(id & 255, id >> 8, kind), 0);
+}
+
 // Decorative continuation of the real boundary, never a generated/editor hex.
 // Distance to the rectangular domain rounds its corners; varying reach and
 // tangent displacement turn the extended outline into bays and peninsulas.
-vec4 frame_terrain(ivec2 raw_offset) {
+TerrainSample frame_terrain(ivec2 raw_offset) {
     vec2 p = vec2(raw_offset);
     vec2 edge = clamp(p, vec2(0.0), vec2(map_size - 1));
     vec2 outside = p - edge;
@@ -153,11 +209,11 @@ vec4 frame_terrain(ivec2 raw_offset) {
     if (outside.x != 0.0) sample_offset.y += broad * tangent_warp;
     if (outside.y != 0.0) sample_offset.x += detail * tangent_warp;
     ivec2 source = clamp(ivec2(round(sample_offset)), ivec2(0), map_size - 1);
-    vec4 data = texelFetch(terrain_data, source, 0);
-    int bits = int(round(data.a * 255.0));
-    vec4 sea = vec4(72.0 / 255.0, 116.0 / 255.0, 0.0, 1.0 / 255.0);
-    if ((bits & 3) != 0) return sea;
-    float elevation = dot(round(data.rg * 255.0), vec2(1.0, 256.0)) - 32768.0;
+    TerrainSample data = load_sample(source);
+    int bits = data.symbols;
+    TerrainSample sea = sea_sample();
+    if (data.water != 0) return sea;
+    float elevation = dot(round(data.height * 255.0), vec2(1.0, 256.0)) - 32768.0;
     float reach = scale * max(0.18, 0.90 + broad * 0.50 + detail * 0.30)
         * (0.75 + clamp(elevation / 3500.0, 0.0, 0.45));
     vec2 origin = vec2(-ROOT3 * 0.5, -1.0);
@@ -184,31 +240,26 @@ vec4 frame_terrain(ivec2 raw_offset) {
     if (coast <= 0.0) {
         float depth = 30.0 + 2970.0 * clamp(-coast / max(2.0, reach * 0.25), 0.0, 1.0);
         float encoded_sea = 32768.0 - depth;
-        sea.rg = vec2(mod(encoded_sea, 256.0), floor(encoded_sea / 256.0)) / 255.0;
+        sea.height = vec2(mod(encoded_sea, 256.0), floor(encoded_sea / 256.0)) / 255.0;
         return sea;
     }
     float fade = smoothstep(0.0, max(1.5, reach * 0.7), coast);
     float encoded = clamp(elevation * fade + 32768.0, 0.0, 65535.0);
-    data.rg = vec2(mod(encoded, 256.0), floor(encoded / 256.0)) / 255.0;
-    data.b = float(int(round(data.b * 255.0)) & 15) / 255.0;
-    if (fade < 0.35) bits = (bits & 128) | (1 << 2);
-    data.a = float(bits) / 255.0;
+    data.height = vec2(mod(encoded, 256.0), floor(encoded / 256.0)) / 255.0;
+    data.crowding = 0.0;
+    if (fade < 0.35) { bits &= 128; data.relief = 1; }
+    data.symbols = bits;
     return data;
 }
 
-vec4 sample_terrain(ivec2 hex) {
+TerrainSample sample_terrain(ivec2 hex) {
     ivec2 raw_offset = to_offset(hex);
     if (world_ocean_frame && !inside(raw_offset)) return frame_terrain(raw_offset);
     ivec2 offset = data_offset(hex);
     if (!inside(offset)) {
-        return vec4(0.0, 0.0, 0.0, 1.0 / 255.0);
+        return sea_sample();
     }
-    return texelFetch(terrain_data, offset, 0);
-}
-
-float unpack16(vec2 bytes) {
-    vec2 integer_bytes = round(bytes * 255.0);
-    return dot(integer_bytes, vec2(1.0, 256.0));
+    return load_sample(offset);
 }
 
 // Battle Brothers earthy low-fantasy biome colors
@@ -222,23 +273,24 @@ vec3 biome_color(float id) {
     if (id == 8.0) return vec3(0.25, 0.31, 0.22); // Taiga
     if (id == 9.0) return vec3(0.54, 0.56, 0.51); // Tundra
     if (id == 10.0) return vec3(0.81, 0.84, 0.83); // Alpine snow
+    if (id == 11.0) return vec3(0.23, 0.29, 0.19); // Wooded swamp
     return vec3(0.35, 0.41, 0.21); // Grasslands
 }
 
-int surface_bits(vec4 data) {
-    return int(round(data.a * 255.0));
+int surface_bits(TerrainSample data) {
+    return data.symbols;
 }
 
-int water_type(vec4 data) {
-    return surface_bits(data) & 3;
+int water_type(TerrainSample data) {
+    return data.water;
 }
 
-int biome_id(vec4 data) {
-    return int(round(data.b * 255.0)) & 15;
+int biome_id(TerrainSample data) {
+    return data.biome;
 }
 
-float shore_crowding(vec4 data) {
-    return float((int(round(data.b * 255.0)) >> 4) & 3) / 3.0;
+float shore_crowding(TerrainSample data) {
+    return data.crowding;
 }
 
 vec2 hex_center(ivec2 hex) {
@@ -257,10 +309,10 @@ uint vegetation_hash(ivec2 hex) {
     return value ^ (value >> 16u);
 }
 
-vec3 ground_color(vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
+vec3 ground_color(TerrainSample data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
     int water = water_type(data);
     int biome = biome_id(data);
-    int base_art = water != 0 ? 9 + water : (biome == 0 ? 1 : clamp(biome - 1, 0, 9));
+    int base_art = water != 0 ? (water == 1 ? 10 : (water == 2 ? 11 : (water == 3 ? 12 : 13))) : int(unpack16(catalog_entry(biome, 0).rg));
     int variant_a = int(vegetation_hash(hex) % uint(VARIANTS));
     int variant_b = (variant_a + 1) % VARIANTS;
 
@@ -279,12 +331,12 @@ vec3 ground_color(vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
 
 float shelf_distance(ivec2 hex) {
     if (world_ocean_frame && !inside(to_offset(hex))) {
-        vec4 frame_data = frame_terrain(to_offset(hex));
-        float elevation = unpack16(frame_data.rg) - 32768.0;
+        TerrainSample frame_data = frame_terrain(to_offset(hex));
+        float elevation = unpack16(frame_data.height) - 32768.0;
         return clamp(-elevation / 750.0, 0.0, 1.0);
     }
     ivec2 offset = clamp(data_offset(hex), ivec2(0), map_size - 1);
-    return texelFetch(detail_data, offset, 0).g;
+    return texelFetch(detail_data, offset, 0).a;
 }
 
 vec3 ocean_color(float distance_to_land, vec2 tile_dx, vec2 tile_dy) {
@@ -311,12 +363,8 @@ vec3 ocean_color(float distance_to_land, vec2 tile_dx, vec2 tile_dy) {
 int vegetation_index(int biome, int water) {
     if (water == 3) return 5;   // Wetlands
     if (water != 0) return -1;
-    if (biome == 3) return 0;   // Temperate forest
-    if (biome == 4) return 1;   // Rainforest
-    if (biome == 8) return 2;   // Taiga
-    if (biome == 5) return 3;   // Savanna
-    if (biome == 7) return 4;   // Desert
-    return -1;
+    int art = int(unpack16(catalog_entry(biome, 0).ba));
+    return art == 65535 ? -1 : art;
 }
 
 bool inside_art(vec2 uv) {
@@ -338,34 +386,37 @@ vec4 sample_overlay(sampler2DArray atlas, int art, vec2 uv, vec2 dx, vec2 dy, fl
     return texel;
 }
 
-vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, vec2 tile_dy, float minification) {
+vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, vec2 tile_dy, float minification, float symbol_visibility) {
     ivec2 offset = data_offset(hex);
     bool decorative = world_ocean_frame && !inside(to_offset(hex));
     if (!inside(offset) && !decorative) return color;
-    vec4 data = decorative ? frame_terrain(to_offset(hex)) : texelFetch(terrain_data, offset, 0);
+    TerrainSample data = decorative ? frame_terrain(to_offset(hex)) : load_sample(offset);
     int surface = surface_bits(data);
-    int relief = (surface >> 2) & 7;
-    int water = surface & 3;
+    int relief = data.relief;
+    int water = data.water;
     if ((surface & 192) == 0 && !is_current) {
         return color;
     }
 
     vec2 tile = hex_uv(hex);
     uint rank = vegetation_hash(hex);
-    int detail = 0;
+    vec4 detail = vec4(0.0);
     if (!decorative && show_details && minification < 1.0) {
-        detail = int(round(texelFetch(detail_data, offset, 0).r * 255.0));
+        detail = texelFetch(detail_data, offset, 0);
     }
-    int icon_base = (detail & 31) - 1;
+    int icon_base = int(unpack16(catalog_entry(int(unpack16(detail.rg)), 2).rg));
+    if (icon_base == 65535) icon_base = -1;
+    bool close_icon = (int(round(detail.b * 255.0)) & 1) != 0;
     float close_reveal = smoothstep(0.43, 0.90, detail_zoom);
-    float reveal = (detail & 32) != 0 ? close_reveal : 1.0;
-    bool shared_hex = (detail & 32) != 0 ||
+    float reveal = close_icon ? close_reveal : 1.0;
+    bool shared_hex = close_icon ||
         (show_relief && show_vegetation && (surface & 192) == 192);
     float shared_layout = shared_hex ? smoothstep(0.30, 0.57, detail_zoom) : 0.0;
 
     // 1. Continuous 2.5D Overlapping Mountain Ranges & Hills (Battle Brothers organic randomized massif layout)
     if (show_relief && (surface & 64) != 0) {
-        int base_relief = (surface & 32) != 0 ? 4 : relief - 1;
+        int base_relief = (surface & 32) != 0 ? 4 : int(unpack16(catalog_entry(relief, 1).rg));
+        if (data.landform == 4 && (surface & 16) != 0) base_relief = 5;
         int variant = int(rank % uint(VARIANTS));
         int art = base_relief * VARIANTS + variant;
 
@@ -381,6 +432,22 @@ vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, v
         vec2 size = mix(vec2(1.82, 1.56), vec2(1.66, 1.42), detail_zoom) * rand_scale;
         anchor = mix(anchor, vec2(0.5, 0.34) + jitter * 0.45, shared_layout * 0.55);
         size = mix(size, vec2(1.22, 1.06) * rand_scale, shared_layout * 0.55);
+        if ((surface & 16) != 0) {
+            int direction = (surface & 7) - 1;
+            vec2 outward = vec2(0.0);
+            if (direction == 0) outward = vec2(1.0, 0.0);
+            else if (direction == 1) outward = vec2(0.5, 0.75);
+            else if (direction == 2) outward = vec2(-0.5, 0.75);
+            else if (direction == 3) outward = vec2(-1.0, 0.0);
+            else if (direction == 4) outward = vec2(-0.5, -0.75);
+            else if (direction == 5) outward = vec2(0.5, -0.75);
+            anchor = vec2(0.5, 0.47) + outward * 0.18 + jitter * 0.06;
+            size = vec2(1.38, 1.28) * mix(vec2(1.0), rand_scale, 0.15);
+        }
+        if ((surface & 8) != 0) {
+            anchor = vec2(0.5, 0.46) + jitter * 0.45;
+            size = vec2(1.35, 1.24) * mix(vec2(1.0), rand_scale, 0.4);
+        }
 
         vec2 uv = (tile - anchor) / size + vec2(0.5);
         uv.x += (uv.y - 0.5) * skew;
@@ -404,13 +471,13 @@ vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, v
             int variant = int((rank >> 2u) % uint(VARIANTS));
             int art = base_veg * VARIANTS + variant;
 
-            vec2 anchor = mix(vec2(0.5, 0.48), vec2(0.48, 0.46), detail_zoom);
-            vec2 size = mix(vec2(1.42, 1.24), vec2(1.24, 1.08), detail_zoom);
-            anchor = mix(anchor, vec2(0.32, 0.46), shared_layout * 0.65);
-            size = mix(size, vec2(0.88, 0.78), shared_layout * 0.65);
+            // Close zoom gives every vegetation patch the upper-left of its hex,
+            // leaving the center/right open for terrain and detail icons.
+            vec2 anchor = mix(vec2(0.5, 0.48), vec2(0.28, 0.28), detail_zoom);
+            vec2 size = mix(vec2(1.42, 1.24), vec2(0.72, 0.64), detail_zoom);
 
             vec2 offset_vec = vec2(float(rank & 255u), float((rank >> 8u) & 255u)) / 127.5 - 1.0;
-            vec2 jitter = mix(vec2(0.28, 0.32), vec2(0.10, 0.10), shared_layout);
+            vec2 jitter = mix(vec2(0.28, 0.32), vec2(0.045, 0.04), detail_zoom);
             anchor += offset_vec * jitter;
             float scale = mix(0.88, 1.18, float((rank >> 16u) & 255u) / 255.0);
             size *= scale;
@@ -418,7 +485,7 @@ vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, v
             vec2 uv = (tile - anchor) * projection + vec2(0.5);
             if (inside_art(uv)) {
                 vec4 texel = sample_overlay(vegetation_art, art, uv, tile_dx * projection, tile_dy * projection, minification, 8.0);
-                color = mix(color, texel.rgb, texel.a);
+                color = mix(color, texel.rgb, texel.a * symbol_visibility);
             }
         }
     }
@@ -435,22 +502,22 @@ vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, v
         vec2 uv = (tile - anchor) / size + vec2(0.5);
         if (inside_art(uv)) {
             vec4 icon = textureGrad(detail_art, vec3(uv, float(icon_art)), tile_dx / size, tile_dy / size);
-            color = mix(color, icon.rgb, icon.a * reveal * (1.0 - minification));
+            color = mix(color, icon.rgb, icon.a * reveal * (1.0 - minification) * symbol_visibility);
         }
     }
     return color;
 }
 
-vec3 decorate(vec3 color, vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
+vec3 decorate(vec3 color, TerrainSample data, ivec2 hex, vec2 tile_dx, vec2 tile_dy, float symbol_visibility) {
     float minification = smoothstep(0.42, 0.88, max(length(tile_dx), length(tile_dy)));
     if (minification >= 0.999) {
-        return decorate_single_hex(color, hex, true, tile_dx, tile_dy, minification);
+        return decorate_single_hex(color, hex, true, tile_dx, tile_dy, minification, symbol_visibility);
     }
     // Render 11-hex neighborhood in 2.5D back-to-front painter's order so mountains and forests overlap across hex borders
     for (int i = 0; i < 11; i++) {
         ivec2 offset_hex = PAINTER_HEXES[i];
         bool is_current = (i == 5);
-        color = decorate_single_hex(color, hex + offset_hex, is_current, tile_dx, tile_dy, minification);
+        color = decorate_single_hex(color, hex + offset_hex, is_current, tile_dx, tile_dy, minification, symbol_visibility);
     }
     return color;
 }
@@ -494,20 +561,20 @@ vec3 curved_biome_shares(vec3 ids, vec3 weights) {
     return shares / dot(shares, vec3(1.0));
 }
 
-vec3 terrain_color(vec2 axial, vec4 current, ivec2 current_hex, vec2 tile_dx, vec2 tile_dy) {
+vec3 terrain_color(vec2 axial, TerrainSample current, ivec2 current_hex, vec2 tile_dx, vec2 tile_dy) {
     ivec2 cell = ivec2(floor(axial));
     vec2 f = fract(axial);
     bool upper = f.x + f.y > 1.0;
     ivec2 hex_a = cell + ivec2(upper ? 1 : 0);
     ivec2 hex_b = cell + ivec2(1, 0);
     ivec2 hex_c = cell + ivec2(0, 1);
-    vec4 a = sample_terrain(hex_a);
-    vec4 b = sample_terrain(hex_b);
-    vec4 c = sample_terrain(hex_c);
+    TerrainSample a = sample_terrain(hex_a);
+    TerrainSample b = sample_terrain(hex_b);
+    TerrainSample c = sample_terrain(hex_c);
     vec3 weights = upper
         ? vec3(f.x + f.y - 1.0, 1.0 - f.y, 1.0 - f.x)
         : vec3(1.0 - f.x - f.y, f.x, f.y);
-    vec3 heights = vec3(unpack16(a.rg), unpack16(b.rg), unpack16(c.rg)) - 32768.0;
+    vec3 heights = vec3(unpack16(a.height), unpack16(b.height), unpack16(c.height)) - 32768.0;
     ivec3 types = ivec3(water_type(a), water_type(b), water_type(c));
     int current_type = water_type(current);
     vec3 dry_weights = weights * vec3(equal(types, ivec3(0)));
@@ -552,11 +619,12 @@ vec3 terrain_color(vec2 axial, vec4 current, ivec2 current_hex, vec2 tile_dx, ve
             dot(dry_weights.xz, same.xz),
             dot(dry_weights.xy, same.yz));
         vec3 share = biome_weights / land_fraction;
-        vec3 curved = mix(share, curved_biome_shares(ids, dry_weights / land_fraction), 0.36);
+        vec3 curved = mix(share, curved_biome_shares(ids, dry_weights / land_fraction), 0.12);
         vec3 phase = ids * 2.39996;
         vec3 shift = noise.x * sin(phase) * 0.16 + noise.y * cos(phase) * 0.08;
+        shift += boundary_roughness(map_position, footprint) * sin(phase + 1.3) * 0.32;
         curved += 4.0 * share * (1.0 - share) * shift;
-        float width = clamp(0.38 + noise.x * 0.13 + footprint * 0.10, 0.24, 0.49);
+        float width = clamp(0.18 + noise.x * 0.06 + footprint * 0.10, 0.10, 0.30);
         vec3 feather = smoothstep(vec3(0.5 - width), vec3(0.5 + width), curved);
         dry_weights *= max(feather, share * 0.05) / max(share, vec3(0.00001));
     }
@@ -573,13 +641,16 @@ vec3 terrain_color(vec2 axial, vec4 current, ivec2 current_hex, vec2 tile_dx, ve
     // Battle Brothers coastal transition: sandy-pebble beach bank & dark wet-shore rim
     float crowding = dot(weights, vec3(shore_crowding(a), shore_crowding(b), shore_crowding(c)));
     float tight = smoothstep(0.13, 0.68, crowding);
-    float feather = clamp(0.025 + footprint * 0.40, 0.025, 0.11);
+    float feather = clamp(0.020 + footprint * 0.25, 0.020, 0.09);
     vec2 warped = map_position + noise * 0.31;
     float contour = coast_noise(warped, 0.73);
     float fine = coast_noise(warped, 2.45) * (1.0 - smoothstep(0.09, 0.34, footprint));
     float edge = clamp(mix(0.35, 0.43, tight) + 0.105 * noise.x + 0.065 * contour
         + 0.045 * noise.y + 0.026 * fine, 0.19, 0.49);
+    edge = clamp(edge + boundary_roughness(map_position, footprint) * 0.14, 0.14, 0.55);
     float bend = clamp(0.32 + 0.30 * noise.x - 0.23 * contour, 0.04, 0.76);
+    if (natural_water_shapes) bend *= any(equal(types, ivec3(2))) ? 0.35 : 0.70;
+    bend *= 0.45;
     float curve = mix(land_fraction - edge, curved_shore(weights, types, edge), bend);
     float strip = smoothstep(-feather, feather, curve);
 
@@ -593,6 +664,7 @@ vec3 terrain_color(vec2 axial, vec4 current, ivec2 current_hex, vec2 tile_dx, ve
 }
 
 void fragment() {
+    float symbol_visibility = has_river_clearance ? 1.0 - texture(river_clearance, SCREEN_UV).a : 1.0;
     vec2 map_dx = dFdx(map_position);
     vec2 map_dy = dFdy(map_position);
     vec2 tile_dx = map_dx / vec2(ROOT3, 2.0);
@@ -607,10 +679,11 @@ void fragment() {
         if (editor_preview && layer != 2 && layer != 3) {
             ivec3 preview_offset = ivec3(offset.x, offset.y % editor_band_height, offset.y / editor_band_height);
             vec4 data = texelFetch(editor_data, preview_offset, 0);
-            int surface = int(round(data.a * 255.0));
-            int water = surface & 3;
-            int relief = (surface >> 2) & 7;
-            int locks = surface >> 6;
+            vec4 surface = texelFetch(editor_data, preview_offset + ivec3(0, editor_band_height, 0), 0);
+            vec4 geography = texelFetch(editor_data, preview_offset + ivec3(0, editor_band_height * 2, 0), 0);
+            int water = int(round(surface.r * 255.0));
+            int relief = int(unpack16(surface.gb));
+            int locks = int(round(geography.a * 255.0));
             float elevation = unpack16(data.rg) - 32768.0;
             if (layer == 5) {
                 color = locks == 2 ? vec3(0.69, 0.31, 0.37)
@@ -619,9 +692,9 @@ void fragment() {
                 color = vec3(0.14, 0.12, 0.10);
             } else if (layer == 1) {
                 color = mix(vec3(0.09, 0.14, 0.22), vec3(0.96, 0.87, 0.62),
-                    clamp((elevation + 2400.0) / 6800.0, 0.0, 1.0));
+                    clamp((elevation + 2400.0) / (elevation_color_max + 2400.0), 0.0, 1.0));
             } else if (water == 0) {
-                color = biome_color(round(data.b * 255.0));
+                color = biome_color(unpack16(data.ba));
                 if (layer == 0) {
                     color *= 0.83 + float(relief) * 0.095 + clamp(elevation * 0.00008, -0.12, 0.18);
                 }
@@ -631,13 +704,13 @@ void fragment() {
         } else if (stage == 0 && layer != 5) {
             color = vec3(0.14, 0.12, 0.10);
         } else if (layer == 0) {
-            vec4 data = sample_terrain(hex);
-            color = decorate(terrain_color(axial, data, hex, tile_dx, tile_dy), data, hex, tile_dx, tile_dy);
+            TerrainSample data = sample_terrain(hex);
+            color = decorate(terrain_color(axial, data, hex, tile_dx, tile_dy), data, hex, tile_dx, tile_dy, symbol_visibility);
         } else if (layer == 1 || layer == 4) {
-            vec4 data = sample_terrain(hex);
-            float elevation = unpack16(data.rg) - 32768.0;
+            TerrainSample data = sample_terrain(hex);
+            float elevation = unpack16(data.height) - 32768.0;
             color = layer == 1
-                ? mix(vec3(0.09, 0.14, 0.22), vec3(0.96, 0.87, 0.62), clamp((elevation + 2400.0) / 6800.0, 0.0, 1.0))
+                ? mix(vec3(0.09, 0.14, 0.22), vec3(0.96, 0.87, 0.62), clamp((elevation + 2400.0) / (elevation_color_max + 2400.0), 0.0, 1.0))
                 : (water_type(data) != 0 ? OCEAN : biome_color(float(biome_id(data))));
         } else if (layer == 2 || layer == 3) {
             vec4 data = editor_climate ? texelFetch(editor_climate_data, offset, 0) : texelFetch(climate_data, offset, 0);
@@ -689,8 +762,8 @@ void fragment() {
     float alpha = 1.0;
     if (world_ocean_frame && !inside(offset)) {
         // Decorative coast and water: no extra gameplay/editor data is created.
-        vec4 frame_data = sample_terrain(hex);
-        color = stage > 0 ? decorate(terrain_color(axial, frame_data, hex, tile_dx, tile_dy), frame_data, hex, tile_dx, tile_dy) : OCEAN;
+        TerrainSample frame_data = sample_terrain(hex);
+        color = stage > 0 ? decorate(terrain_color(axial, frame_data, hex, tile_dx, tile_dy), frame_data, hex, tile_dx, tile_dy, symbol_visibility) : OCEAN;
         vec2 data_origin = vec2(-ROOT3 * 0.5, -1.0);
         vec2 data_limit = vec2(ROOT3 * float(map_size.x), 1.5 * float(map_size.y - 1) + 1.0);
         vec2 center = (data_origin + data_limit) * 0.5;
@@ -707,6 +780,14 @@ void fragment() {
         float outline = max(abs(atlas.y), length(vec2(atlas.x, atlas.y * 0.8)));
         float edge_width = max(length(fwidth(atlas)), 0.0001);
         alpha = 1.0 - smoothstep(1.0 - edge_width, 1.0, outline);
+    }
+    if (format_probe > 0 && inside(offset)) {
+        TerrainSample probe = sample_terrain(hex);
+        uvec2 features = geographic_features(hex);
+        ivec3 bytes = format_probe == 1 ? ivec3(probe.biome & 255, probe.biome >> 8, probe.water)
+            : (format_probe == 2 ? ivec3(probe.relief & 255, probe.relief >> 8, probe.landform & 255)
+            : ivec3(probe.landform >> 8, int(features.x & 255u), int(features.y >> 24u)));
+        color = vec3(bytes) / 255.0; alpha = 1.0;
     }
     COLOR = vec4(color, alpha);
 }

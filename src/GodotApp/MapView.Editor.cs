@@ -501,6 +501,7 @@ public partial class MapView
             return false;
         _history!.Capture(i);
         world.Elevation[i] = elevation;
+        _strokeCells.Add(i);
         return true;
     }
 
@@ -531,10 +532,15 @@ public partial class MapView
             return;
         _stroke = null;
         _lastBrushCenter = null;
-        if (brush.Kind == BrushKind.Water && _world is WorldData world)
-            foreach (int i in _strokeCells)
-                if (((HexLocks)world.LockMask[i] & HexLocks.Flags) == 0)
-                    world.RefreshCoast(i);
+        if (_world is WorldData world)
+        {
+            if (brush.Kind == BrushKind.Water)
+                foreach (int i in _strokeCells)
+                    if (((HexLocks)world.LockMask[i] & HexLocks.Flags) == 0) world.RefreshCoast(i);
+            if (brush.Kind is BrushKind.Elevation or BrushKind.Water)
+                TerrainClassifier.ReclassifyAround(world, _strokeCells, i => _history!.Capture(i),
+                    i => _editorPreview?.UpdateCell(world, i), _selection);
+        }
         _strokeCells.Clear();
         _strokeElevations.Clear();
         if (_history!.Commit())
@@ -574,6 +580,7 @@ public partial class MapView
         {
             case HexLocks.Biome: world.Biomes[i] = (BiomeType)value; break;
             case HexLocks.Relief: world.Relief[i] = (ReliefType)value; break;
+            case HexLocks.Landform: world.Landforms[i] = (LandformType)value; break;
             case HexLocks.Water:
                 world.Water[i] = (WaterType)value;
                 world.RefreshCoast(i);
@@ -582,6 +589,9 @@ public partial class MapView
             case HexLocks.Temperature: world.Temperature[i] = (short)value; break;
             case HexLocks.Rainfall: world.Rainfall[i] = (ushort)value; break;
         }
+        if (field is HexLocks.Elevation or HexLocks.Water)
+            TerrainClassifier.ReclassifyAround(world, new[] { i }, cell => _history.Capture(cell),
+                cell => _editorPreview?.UpdateCell(world, cell));
         _editorPreview?.UpdateCell(world, i);
         if (_history.Commit())
             EditChanged(true, false, previewReady: true,
