@@ -14,6 +14,7 @@ public static partial class WorldGenerator
         private readonly WorldRegion? _selection;
         private readonly HexLocks _fields;
         private readonly ushort[] _locks;
+        private readonly MapDomain _domain;
         public int WorldHeight { get; }
         public int Count => _bounds.Width * _bounds.Height;
         public ChunkGrid Chunks => new(_bounds.Width, _bounds.Height);
@@ -32,6 +33,7 @@ public static partial class WorldGenerator
             _selection = selection;
             _fields = fields;
             _locks = world.LockMask;
+            _domain = world.Domain;
             _worldWidth = world.Width;
             WorldHeight = world.Height;
             _wrap = world.Manifest.HorizontalWrap;
@@ -54,8 +56,8 @@ public static partial class WorldGenerator
         public int WorldRow(int row) => row + _bounds.Row;
 
         public bool Writes(int column, int row, int cell, HexLocks field) =>
-            _selection is not WorldRegion region ||
-            (region.Contains(column, row) && (_fields & field) != 0 && ((HexLocks)_locks[cell] & field) == 0);
+            _domain.Contains(column, row) && (_selection is not WorldRegion region ||
+            (region.Contains(column, row) && (_fields & field) != 0 && ((HexLocks)_locks[cell] & field) == 0));
 
         public Hex WorldHex(int column, int row) => HexGrid.FromOffset(WorldColumn(column), WorldRow(row));
 

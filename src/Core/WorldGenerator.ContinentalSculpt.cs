@@ -13,7 +13,13 @@ public static partial class WorldGenerator
         private readonly bool _wrap;
         private readonly bool _useContinuousField;
         private readonly TectonicReference? _tectonics;
+        private readonly int _plateCount;
+        private readonly WorldManifest _manifest;
+        private readonly MapDomain _domain;
+        private readonly PolarPlateBands? _polarBands;
+        private readonly OceanicMarginBands? _oceanicMargins;
         private readonly bool _strongTectonics;
+        private readonly bool _microplateTerrain;
         private readonly bool _compactCoasts;
         private readonly bool _narrowRidges;
         private readonly bool _balancedRidges;
@@ -41,7 +47,13 @@ public static partial class WorldGenerator
         public ContinentalSculpture(WorldManifest manifest, TectonicReference? tectonics = null)
         {
             _tectonics = tectonics;
+            _plateCount = tectonics?.GenerationPlateCount(manifest) ?? 0;
+            _manifest = manifest;
+            _domain = new MapDomain(manifest);
+            _polarBands = PolarPlateBands.Enabled(manifest) ? new PolarPlateBands(manifest) : null;
+            _oceanicMargins = OceanicMarginBands.Enabled(manifest) ? new OceanicMarginBands(manifest) : null;
             _strongTectonics = manifest.GeneratorVersion >= 19;
+            _microplateTerrain = manifest.GeneratorVersion >= 32;
             _compactCoasts = manifest.GeneratorVersion >= 20;
             _narrowRidges = manifest.GeneratorVersion is >= 24 and < 26;
             _balancedRidges = manifest.GeneratorVersion == 25;
@@ -75,6 +87,8 @@ public static partial class WorldGenerator
 
         public (float[] Scores, float[]? Ridges, float SeaLevel, WaterType[]? Water) Build(Action<GenerationProgress>? progress)
         {
+            if (_manifest.GeneratorVersion >= 33 && _tectonics is not null)
+                return BuildPlateTerrain(progress);
             int[] centers = PlaceCenters();
             Sculpt(centers, progress);
             ApplyTectonics();
@@ -146,11 +160,11 @@ public static partial class WorldGenerator
                         int candidateY = (int)((row + 0.22f + _random.NextSingle() * 0.56f) * _height / rows);
                         var point = HexGrid.Center(HexGrid.FromOffset(candidateX, candidateY));
                         float crust = 0;
-                        float crustRadius = _strongTectonics ? MathF.Sqrt((float)_width * _height / _tectonics.Plates.Length) * HexGrid.Root3 : _scale;
+                        float crustRadius = _strongTectonics ? MathF.Sqrt((float)_width * _height / _plateCount) * HexGrid.Root3 : _scale;
                         foreach (var plate in _tectonics.Plates)
                         {
                             float distance = WrappedDelta(point, new Vector2(plate.X, plate.Y)).LengthSquared();
-                            crust += (plate.Continental ? 1f : (_strongTectonics ? -0.85f : -0.35f)) * MathF.Exp(-distance / (crustRadius * crustRadius * 0.7f));
+                            crust += (plate.Continental ? 1f : (_strongTectonics ? -0.85f : -0.35f)) * MathF.Exp(-distance / (crustRadius * crustRadius * plate.Size * plate.Size * 0.7f));
                         }
                         if (crust > best) { best = crust; x = candidateX; y = candidateY; }
                     }
@@ -286,15 +300,15 @@ public static partial class WorldGenerator
         {
             if (_tectonics is null) return;
             var field = new ContinuousField(this);
-            float plateScale = MathF.Sqrt((float)_width * _height / _tectonics.Plates.Length);
+            float plateScale = MathF.Sqrt((float)_width * _height / _plateCount);
             // Restore the v19 continuous ridge profile. Scale its reach with the
             // average plate size so larger maps with more plates do not accumulate
             // continental-width mountain plateaus. At 512x256 / 21 plates this is v19.
-            float ridgeScale = _organicRidges ? _scale * MathF.Sqrt(21f / _tectonics.Plates.Length) : _scale;
+            float ridgeScale = _organicRidges ? _scale * MathF.Sqrt(21f / _plateCount) : _scale;
             foreach (var plate in _tectonics.Plates)
                 field.Apply(new[] { new Vector2(plate.X, plate.Y) },
                     _strongTectonics ? (plate.Continental ? 1.45f : -0.85f) : (plate.Continental ? 0.65f : -0.25f),
-                    _strongTectonics ? plateScale * 0.72f : _scale * 0.32f, false);
+                    _strongTectonics ? plateScale * 0.72f * plate.Size : _scale * 0.32f, false);
             foreach (var contact in _tectonics.Contacts)
             {
                 float intensity = Math.Clamp(contact.Compression, -1.5f, 1.5f);
@@ -306,20 +320,39 @@ public static partial class WorldGenerator
                 float crestStrength = _featheredRidges ? 0.6f + 0.4f * Math.Clamp(intensity / 1.4f, 0, 1) : 1f;
                 var plateA = _tectonics.Plates[contact.A];
                 var plateB = _tectonics.Plates[contact.B];
+                float localRidgeScale = ridgeScale;
+                if (_microplateTerrain)
+                {
+                    // Smaller plates make narrow, uneven belts and alternating
+                    // uplift/depression along their locally jagged contact normals.
+                    bool micro = Math.Min(plateA.Size, plateB.Size) < 0.6f;
+                    if (micro)
+                    {
+                        float variation = FieldNoise((int)((a.X + b.X) / (2 * HexGrid.Root3)),
+                            (int)((a.Y + b.Y) / 3f), 31f, _seed ^ 0x93AC71D5u);
+                        localRidgeScale *= 0.45f + variation * 0.25f;
+                        amplitude *= 0.75f + variation * 0.65f;
+                        crestStrength *= 0.65f + variation * 0.35f;
+                    }
+                    // More sampling segments should not multiply the total uplift.
+                    float referenceLength = MathF.Min(_width * HexGrid.Root3 / Math.Clamp(_width / 8, 16, 128),
+                        _height * 1.5f / Math.Clamp(_height / 8, 8, 64));
+                    amplitude *= Math.Clamp((b - a).Length() / referenceLength, 0.08f, 1.5f);
+                }
                 if (intensity > 0 && (!plateA.Continental || !plateB.Continental))
                 {
                     var normal = Vector2.Normalize(WrappedDelta(new Vector2(plateA.X, plateA.Y), new Vector2(plateB.X, plateB.Y)));
                     // A continental side overrides oceanic crust; ocean-ocean tie is stable.
                     bool upperA = plateA.Continental || (!plateB.Continental && contact.A < contact.B);
-                    Vector2 offset = normal * (_narrowRidges ? plateScale * 0.06f : ridgeScale * 0.045f) * (upperA ? -1 : 1);
-                    field.Apply(new[] { a + offset, b + offset }, amplitude, ridgeScale * 0.035f, !_narrowRidges, crestStrength);
+                    Vector2 offset = normal * (_narrowRidges ? plateScale * 0.06f : localRidgeScale * 0.045f) * (upperA ? -1 : 1);
+                    field.Apply(new[] { a + offset, b + offset }, amplitude, localRidgeScale * 0.035f, !_narrowRidges, crestStrength);
                     if (_narrowRidges)
                         field.Apply(new[] { a + offset, b + offset }, 0, Math.Max(_balancedRidges ? 2.4f : 1.8f, plateScale * (_balancedRidges ? 0.075f : 0.035f)), true);
                     field.Apply(new[] { a - offset * 0.4f, b - offset * 0.4f }, -amplitude * 0.7f, _scale * 0.018f, false);
                 }
                 else
                 {
-                    field.Apply(new[] { a, b }, amplitude, intensity > 0 ? ridgeScale * 0.065f : _scale * 0.025f, intensity > 0 && !_narrowRidges, crestStrength);
+                    field.Apply(new[] { a, b }, amplitude, intensity > 0 ? localRidgeScale * 0.065f : _scale * 0.025f, intensity > 0 && !_narrowRidges, crestStrength);
                     if (_narrowRidges && intensity > 0)
                         field.Apply(new[] { a, b }, 0, Math.Max(_balancedRidges ? 2.4f : 1.8f, plateScale * (_balancedRidges ? 0.075f : 0.035f)), true);
                 }
@@ -331,7 +364,7 @@ public static partial class WorldGenerator
             if (_ridges is null) return;
             // Smooth only elevation influence, never continental scores. Two
             // separable box passes create a gradual shoulder around the crest.
-            int radius = Math.Max(2, (int)MathF.Round(MathF.Sqrt((float)_width * _height / _tectonics!.Plates.Length) * 0.045f));
+            int radius = Math.Max(2, (int)MathF.Round(MathF.Sqrt((float)_width * _height / _plateCount) * 0.045f));
             var smooth = new float[_ridges.Length];
             var scratch = new float[_ridges.Length];
             float divisor = 2 * radius + 1;
@@ -444,7 +477,7 @@ public static partial class WorldGenerator
                 high = Math.Max(high, score);
             }
 
-            int target = (int)((long)_scores.Length * _settings.LandPercent / 100);
+            int target = (int)((long)_domain.PercentageAreaCount * _settings.LandPercent / 100);
             Span<int> bins = stackalloc int[HistogramSize];
             // Refine the threshold bin once, without sorting or copying a world-sized field.
             for (int pass = 0; pass < 2 && high > low; pass++)

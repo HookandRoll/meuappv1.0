@@ -60,7 +60,7 @@ public static partial class WorldGenerator
                             var normal = System.Numerics.Vector2.Normalize(WrappedDelta(new(pa.X, pa.Y), new(pb.X, pb.Y)));
                             bool upperA = pa.Continental || (!pb.Continental && contact.A < contact.B);
                             float signed = System.Numerics.Vector2.Dot(delta - segment * t, normal) * (upperA ? -1 : 1);
-                            float plateScale = MathF.Sqrt((float)_width * _height / _tectonics.Plates.Length);
+                            float plateScale = MathF.Sqrt((float)_width * _height / _plateCount);
                             if (signed < 0) continue;
                             arc = Math.Max(arc, Math.Max(0, 1 - Math.Abs(distanceToArc - plateScale * 0.12f) / (plateScale * 0.18f)));
                         }

@@ -7,7 +7,7 @@ namespace Mapmaker.Core;
 public static partial class WorldGenerator
 {
     private static short[] BuildGentleElevation(int width, int height, bool wrap,
-        Func<int, WaterType> water, Func<int, short> elevation)
+        Func<int, WaterType> water, Func<int, short> elevation, float[]? tectonicRidges = null)
     {
         int count = width * height;
         var original = new short[count];
@@ -74,7 +74,15 @@ public static partial class WorldGenerator
         {
             if (water(i) != WaterType.None) { original[i] = (short)Math.Clamp(smooth[i], -6000, -1); return; }
             float softened = 0.15f * original[i] + 0.85f * smooth[i];
-            float coast = Smooth(Math.Clamp(shoreDistance[i] / (float)shoreWidth, 0, 1));
+            float localShoreWidth = shoreWidth;
+            if (tectonicRidges is not null)
+            {
+                // Preserve active coastal ranges and volcanic islands: the broad
+                // lowland feather must not erase subduction relief on large maps.
+                float active = Smooth(Math.Clamp(tectonicRidges[i] / 0.25f, 0, 1));
+                localShoreWidth = Interpolate(shoreWidth, Math.Max(2, height / 512f), active);
+            }
+            float coast = Smooth(Math.Clamp(shoreDistance[i] / localShoreWidth, 0, 1));
             original[i] = (short)Math.Clamp(softened * coast, 1, 7200);
         });
         return original;

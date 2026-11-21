@@ -6,6 +6,7 @@ public partial class TectonicOverlay : Node2D
 {
     public TectonicReference? Reference { get; set; }
     public float SymbolSize { get; set; } = 5;
+    public float MapHeight { get; set; }
     public override void _Draw()
     {
         if (Reference is not { } reference) return;
@@ -28,11 +29,20 @@ public partial class TectonicOverlay : Node2D
         foreach (var plate in reference.Plates)
         {
             Vector2 origin = new(plate.X, plate.Y), direction = new Vector2(plate.Vx, plate.Vy).Normalized();
-            Vector2 tip = origin + direction * SymbolSize * 3;
+            float arrowLength = plate.Kind == PlateKind.Normal ? SymbolSize * 3
+                : System.Math.Min(SymbolSize * 1.5f, MapHeight * 0.012f);
+            Vector2 tip = origin + direction * arrowLength;
             DrawLine(origin, tip, Colors.White, 1.4f, true);
             Vector2 normal = new(-direction.Y, direction.X);
             DrawLine(tip, tip - direction * SymbolSize + normal * SymbolSize * 0.5f, Colors.White, 1.4f, true);
             DrawLine(tip, tip - direction * SymbolSize - normal * SymbolSize * 0.5f, Colors.White, 1.4f, true);
+            if (plate.IsPolar)
+            {
+                string label = plate.Kind == PlateKind.Arctic ? "Ártica · oceânica" : "Antártica · oceânica";
+                float fontSize = System.Math.Max(8f, SymbolSize * 2f);
+                DrawString(ThemeDB.FallbackFont, origin + new Vector2(SymbolSize * 2, SymbolSize * 0.8f), label,
+                    fontSize: (int)fontSize, modulate: new Color("b9e8ed"));
+            }
         }
     }
 }

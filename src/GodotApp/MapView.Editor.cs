@@ -244,6 +244,7 @@ public partial class MapView
             {
                 foreach (int i in region.Cells(world.Width))
                 {
+                    if (!world.Domain.Contains(i)) continue;
                     var locks = (HexLocks)world.LockMask[i] & HexLocks.All;
                     _allSelectionLocks &= locks;
                     _anySelectionLocks |= locks;
@@ -283,7 +284,7 @@ public partial class MapView
     }
 
     private bool IsOnWorld(Vector2I offset) =>
-        _world is WorldData world && (uint)offset.X < (uint)world.Width && (uint)offset.Y < (uint)world.Height;
+        _world is WorldData world && world.Domain.Contains(offset.X, offset.Y);
 
     private bool CanPaint(BrushSettings brush)
     {
@@ -431,7 +432,7 @@ public partial class MapView
             var (column, row) = HexGrid.ToOffset(new Hex(center.Q + q, center.R + r));
             if (world.Manifest.HorizontalWrap)
                 column = (column % world.Width + world.Width) % world.Width;
-            if ((uint)column >= (uint)world.Width || (uint)row >= (uint)world.Height ||
+            if (!world.Domain.Contains(column, row) ||
                 (_selection is WorldRegion region && !region.Contains(column, row)) || weight <= 0)
                 continue;
 
@@ -547,6 +548,7 @@ public partial class MapView
         FinishGesture();
         foreach (int i in region.Cells(world.Width))
         {
+            if (!world.Domain.Contains(i)) continue;
             var current = (HexLocks)world.LockMask[i];
             var next = locked ? current | field : current & ~field;
             if (next == current)

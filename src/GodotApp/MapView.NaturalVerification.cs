@@ -342,6 +342,14 @@ public partial class MapView
         try
         {
             var manifest = TestManifest(4096, 2048, TerrainAlgorithm.ContinentalSculpt) with { GeneratorVersion = WorldGenerator.Version };
+            if (OS.GetCmdlineUserArgs().Contains("--world-map"))
+            {
+                var size = MapDomain.ExpandedSize(manifest.Width, manifest.Height);
+                int referenceWidth = manifest.Width, referenceHeight = manifest.Height;
+                manifest = manifest with { Width = size.Width, Height = size.Height,
+                    Generation = manifest.Generation with { Extent = MapExtent.World,
+                        ReferenceWidth = referenceWidth, ReferenceHeight = referenceHeight } };
+            }
             var timer = System.Diagnostics.Stopwatch.StartNew();
             int last = -1;
             var world = await System.Threading.Tasks.Task.Run(() => WorldGenerator.Create(manifest, p =>
@@ -356,7 +364,7 @@ public partial class MapView
             {
                 int orphanEnds = WorldGenerator.ReadRivers(world).Count(r => !r.ParentId.HasValue && r.EndType == "Custom");
                 Require(orphanEnds == 0, "Rio do mapa máximo sem destino.");
-                GD.Print($"MAX alpine={world.Biomes.Count(b => b == BiomeType.Alpine)}, orphanEnds={orphanEnds}");
+                GD.Print($"MAX alpine={world.Biomes.Count(b => b == BiomeType.Alpine)}, mountains={world.Relief.Count(r => r >= ReliefType.Mountains)}, maxElevation={world.Elevation.Max()}, orphanEnds={orphanEnds}");
             }
             GD.Print($"MAX ROUTING joins={world.RiverDiagnostics.HeadwaterJoins}, curves={world.RiverDiagnostics.CurvedReaches}");
             if (OS.GetCmdlineUserArgs().Contains("--compare-rivers"))
@@ -453,8 +461,8 @@ public partial class MapView
             var m = TestManifest(size.Item1, size.Item2, TerrainAlgorithm.ContinentalSculpt) with { GeneratorVersion = 19 };
             var tectonics = TectonicReference.Create(m);
             tectonics.Validate(m.Width, m.Height);
-            Require(tectonics.Plates.Length > previousCount, "Placas não crescem com o mapa.");
-            previousCount = tectonics.Plates.Length;
+            Require(tectonics.NormalPlateCount > previousCount, "Placas comuns não crescem com o mapa.");
+            previousCount = tectonics.NormalPlateCount;
             GD.Print($"Placas v19 {m.Width}x{m.Height}: {previousCount}");
         }
         // A single narrow ridge must leave a continuous rain shadow, not a comb
@@ -508,7 +516,10 @@ public partial class MapView
         Array.Fill(desert.Rainfall, (ushort)100);
         WorldGenerator.GenerateRivers(desert);
         Require(WorldGenerator.ReadRivers(desert).Length == 0, "Deserto uniforme criou rede perene de riachos.");
-        foreach (int version in new[] { 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30 })
+        int[] versions = OS.GetCmdlineUserArgs().Contains("--current-generator-only")
+            ? new[] { WorldGenerator.Version }
+            : new[] { 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40 };
+        foreach (int version in versions)
         foreach (int seed in new[] { 1234, 1, -77 })
         foreach (int land in new[] { 30, 40, 50 })
         foreach (bool wrap in new[] { false, true })
@@ -518,7 +529,7 @@ public partial class MapView
             var a = WorldGenerator.Create(manifest);
             var b = WorldGenerator.Create(manifest);
             Require(Math.Abs(a.Water.Count(w => w == WaterType.None) - a.Count * land / 100) <= 1, "Nova geração perdeu a quota de terra.");
-            Require(a.Tectonics is not null && a.Tectonics.Plates.Length >= 7, "Referência tectônica ausente.");
+            Require(a.Tectonics is not null && a.Tectonics.NormalPlateCount >= 7, "Referência tectônica ausente.");
             Require(a.Elevation.SequenceEqual(b.Elevation) && a.Rainfall.SequenceEqual(b.Rainfall) &&
                 JsonSerializer.Serialize(a.SparseEntities) == JsonSerializer.Serialize(b.SparseEntities), "Nova geração não determinística.");
             string path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".world");
@@ -576,7 +587,7 @@ public partial class MapView
                 history.Redo();
                 Require(ReadDense(a).SequenceEqual(after), "Redo perdeu caches de rio.");
             }
-            GD.Print($"Nova geração: seed={seed}, terra={land}%, wrap={wrap}, placas={a.Tectonics!.Plates.Length}, rios={WorldGenerator.ReadRivers(a).Length}.");
+            GD.Print($"Nova geração: seed={seed}, terra={land}%, wrap={wrap}, placas comuns={a.Tectonics!.NormalPlateCount}, rios={WorldGenerator.ReadRivers(a).Length}.");
         }
     }
 }

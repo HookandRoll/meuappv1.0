@@ -18,6 +18,10 @@ uniform ivec2 map_size;
 uniform int layer;
 uniform int stage;
 uniform bool horizontal_wrap;
+uniform bool world_ocean_frame = false;
+uniform bool atlas_flat_poles = false;
+uniform bool full_atlas_domain = false;
+uniform vec2 frame_noise_offset = vec2(0.0);
 uniform bool show_grid;
 uniform bool show_relief = true;
 uniform bool show_vegetation = true;
@@ -110,7 +114,91 @@ ivec2 data_offset(ivec2 hex) {
     return offset;
 }
 
+float noise_sample(vec2 cell, float period) {
+    if (horizontal_wrap) {
+        cell.x = mod(cell.x, period);
+    }
+    vec2 p = fract(cell * vec2(0.3183099, 0.3678794));
+    p += dot(p, p.yx + 19.19);
+    return fract(p.x * p.y);
+}
+
+float coast_noise(vec2 position, float frequency) {
+    float span = float(map_size.x) * ROOT3;
+    float period = max(1.0, round(span * frequency));
+    vec2 p = position * vec2(horizontal_wrap ? period / span : frequency, frequency);
+    vec2 cell = floor(p);
+    vec2 f = smoothstep(vec2(0.0), vec2(1.0), fract(p));
+    return mix(
+        mix(noise_sample(cell, period), noise_sample(cell + vec2(1.0, 0.0), period), f.x),
+        mix(noise_sample(cell + vec2(0.0, 1.0), period), noise_sample(cell + vec2(1.0), period), f.x),
+        f.y) * 2.0 - 1.0;
+}
+
+// Decorative continuation of the real boundary, never a generated/editor hex.
+// Distance to the rectangular domain rounds its corners; varying reach and
+// tangent displacement turn the extended outline into bays and peninsulas.
+vec4 frame_terrain(ivec2 raw_offset) {
+    vec2 p = vec2(raw_offset);
+    vec2 edge = clamp(p, vec2(0.0), vec2(map_size - 1));
+    vec2 outside = p - edge;
+    float distance_out = max(0.0, length(outside) - 0.5);
+    vec2 physical = vec2(ROOT3 * (p.x + float(raw_offset.y & 1) * 0.5), 1.5 * p.y);
+    float scale = max(6.0, float(map_size.y) * 0.18);
+    vec2 noise_position = physical + frame_noise_offset;
+    float broad = coast_noise(noise_position, 1.0 / (scale * 2.0));
+    float detail = coast_noise(noise_position + vec2(37.0, 19.0), 1.0 / (scale * 0.65));
+    float tangent_warp = smoothstep(0.0, scale * 0.45, distance_out) * scale * 0.24;
+    vec2 sample_offset = edge;
+    if (outside.x != 0.0) sample_offset.y += broad * tangent_warp;
+    if (outside.y != 0.0) sample_offset.x += detail * tangent_warp;
+    ivec2 source = clamp(ivec2(round(sample_offset)), ivec2(0), map_size - 1);
+    vec4 data = texelFetch(terrain_data, source, 0);
+    int bits = int(round(data.a * 255.0));
+    vec4 sea = vec4(72.0 / 255.0, 116.0 / 255.0, 0.0, 1.0 / 255.0);
+    if ((bits & 3) != 0) return sea;
+    float elevation = dot(round(data.rg * 255.0), vec2(1.0, 256.0)) - 32768.0;
+    float reach = scale * max(0.18, 0.90 + broad * 0.50 + detail * 0.30)
+        * (0.75 + clamp(elevation / 3500.0, 0.0, 0.45));
+    vec2 origin = vec2(-ROOT3 * 0.5, -1.0);
+    vec2 limit = vec2(ROOT3 * float(map_size.x), 1.5 * float(map_size.y - 1) + 1.0);
+    vec2 center = (origin + limit) * 0.5;
+    vec2 radii = (limit - origin) * 0.75;
+    vec2 edge_physical = vec2(ROOT3 * edge.x, 1.5 * edge.y);
+    vec2 direction = normalize(physical - edge_physical + vec2(0.00001));
+    vec2 en = (edge_physical - center) / radii;
+    vec2 dn = direction / radii;
+    float qa = dot(dn, dn);
+    float qb = dot(en, dn);
+    float qc = dot(en, en) - 1.0;
+    float ellipse_room = max(0.0, (-qb + sqrt(max(0.0, qb * qb - qa * qc))) / qa);
+    if (atlas_flat_poles) {
+        float polar_room = (radii.y * 0.80 - abs(edge_physical.y - center.y)) / max(0.00001, abs(direction.y));
+        ellipse_room = min(ellipse_room, max(0.0, polar_room));
+    }
+    float units_per_hex = length(physical - edge_physical) / max(0.5, length(outside));
+    float room = ellipse_room * 0.72 / max(1.0, units_per_hex);
+    reach = min(reach, room * (0.75 + broad * 0.20 + detail * 0.10));
+    float fine = coast_noise(noise_position, 1.0 / max(2.0, scale * 0.20));
+    float coast = reach - distance_out + fine * scale * 0.045 * smoothstep(0.0, scale * 0.3, distance_out);
+    if (coast <= 0.0) {
+        float depth = 30.0 + 2970.0 * clamp(-coast / max(2.0, reach * 0.25), 0.0, 1.0);
+        float encoded_sea = 32768.0 - depth;
+        sea.rg = vec2(mod(encoded_sea, 256.0), floor(encoded_sea / 256.0)) / 255.0;
+        return sea;
+    }
+    float fade = smoothstep(0.0, max(1.5, reach * 0.7), coast);
+    float encoded = clamp(elevation * fade + 32768.0, 0.0, 65535.0);
+    data.rg = vec2(mod(encoded, 256.0), floor(encoded / 256.0)) / 255.0;
+    data.b = float(int(round(data.b * 255.0)) & 15) / 255.0;
+    if (fade < 0.35) bits = (bits & 128) | (1 << 2);
+    data.a = float(bits) / 255.0;
+    return data;
+}
+
 vec4 sample_terrain(ivec2 hex) {
+    ivec2 raw_offset = to_offset(hex);
+    if (world_ocean_frame && !inside(raw_offset)) return frame_terrain(raw_offset);
     ivec2 offset = data_offset(hex);
     if (!inside(offset)) {
         return vec4(0.0, 0.0, 0.0, 1.0 / 255.0);
@@ -190,6 +278,11 @@ vec3 ground_color(vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
 }
 
 float shelf_distance(ivec2 hex) {
+    if (world_ocean_frame && !inside(to_offset(hex))) {
+        vec4 frame_data = frame_terrain(to_offset(hex));
+        float elevation = unpack16(frame_data.rg) - 32768.0;
+        return clamp(-elevation / 750.0, 0.0, 1.0);
+    }
     ivec2 offset = clamp(data_offset(hex), ivec2(0), map_size - 1);
     return texelFetch(detail_data, offset, 0).g;
 }
@@ -247,10 +340,9 @@ vec4 sample_overlay(sampler2DArray atlas, int art, vec2 uv, vec2 dx, vec2 dy, fl
 
 vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, vec2 tile_dy, float minification) {
     ivec2 offset = data_offset(hex);
-    if (!inside(offset)) {
-        return color;
-    }
-    vec4 data = texelFetch(terrain_data, offset, 0);
+    bool decorative = world_ocean_frame && !inside(to_offset(hex));
+    if (!inside(offset) && !decorative) return color;
+    vec4 data = decorative ? frame_terrain(to_offset(hex)) : texelFetch(terrain_data, offset, 0);
     int surface = surface_bits(data);
     int relief = (surface >> 2) & 7;
     int water = surface & 3;
@@ -261,7 +353,7 @@ vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, v
     vec2 tile = hex_uv(hex);
     uint rank = vegetation_hash(hex);
     int detail = 0;
-    if (show_details && minification < 1.0) {
+    if (!decorative && show_details && minification < 1.0) {
         detail = int(round(texelFetch(detail_data, offset, 0).r * 255.0));
     }
     int icon_base = (detail & 31) - 1;
@@ -361,27 +453,6 @@ vec3 decorate(vec3 color, vec4 data, ivec2 hex, vec2 tile_dx, vec2 tile_dy) {
         color = decorate_single_hex(color, hex + offset_hex, is_current, tile_dx, tile_dy, minification);
     }
     return color;
-}
-
-float noise_sample(vec2 cell, float period) {
-    if (horizontal_wrap) {
-        cell.x = mod(cell.x, period);
-    }
-    vec2 p = fract(cell * vec2(0.3183099, 0.3678794));
-    p += dot(p, p.yx + 19.19);
-    return fract(p.x * p.y);
-}
-
-float coast_noise(vec2 position, float frequency) {
-    float span = float(map_size.x) * ROOT3;
-    float period = round(span * frequency);
-    vec2 p = position * vec2(horizontal_wrap ? period / span : frequency, frequency);
-    vec2 cell = floor(p);
-    vec2 f = smoothstep(vec2(0.0), vec2(1.0), fract(p));
-    return mix(
-        mix(noise_sample(cell, period), noise_sample(cell + vec2(1.0, 0.0), period), f.x),
-        mix(noise_sample(cell + vec2(0.0, 1.0), period), noise_sample(cell + vec2(1.0), period), f.x),
-        f.y) * 2.0 - 1.0;
 }
 
 float quadratic_boundary(vec3 ordered, float endpoint) {
@@ -615,5 +686,27 @@ void fragment() {
             }
         }
     }
-    COLOR = vec4(color, 1.0);
+    float alpha = 1.0;
+    if (world_ocean_frame && !inside(offset)) {
+        // Decorative coast and water: no extra gameplay/editor data is created.
+        vec4 frame_data = sample_terrain(hex);
+        color = stage > 0 ? decorate(terrain_color(axial, frame_data, hex, tile_dx, tile_dy), frame_data, hex, tile_dx, tile_dy) : OCEAN;
+        vec2 data_origin = vec2(-ROOT3 * 0.5, -1.0);
+        vec2 data_limit = vec2(ROOT3 * float(map_size.x), 1.5 * float(map_size.y - 1) + 1.0);
+        vec2 center = (data_origin + data_limit) * 0.5;
+        vec2 radii = (data_limit - data_origin) * 0.75;
+        float radius = length((map_position - center) / radii);
+        alpha = 1.0 - smoothstep(0.995, 1.0, radius);
+        if (atlas_flat_poles) {
+            float polar = abs(map_position.y - center.y) / radii.y;
+            alpha *= 1.0 - smoothstep(0.797, 0.800, polar);
+        }
+    }
+    if (full_atlas_domain) {
+        vec2 atlas = (map_position / vec2(ROOT3, 1.5) + vec2(0.5)) / vec2(map_size) * 2.0 - 1.0;
+        float outline = max(abs(atlas.y), length(vec2(atlas.x, atlas.y * 0.8)));
+        float edge_width = max(length(fwidth(atlas)), 0.0001);
+        alpha = 1.0 - smoothstep(1.0 - edge_width, 1.0, outline);
+    }
+    COLOR = vec4(color, alpha);
 }

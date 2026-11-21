@@ -34,6 +34,7 @@ public partial class MapView
             Require(!_emptyState.Visible && _textures is null && _layerSelect.IsItemDisabled(3), "A grade vazia tem estado próprio.");
 
             WorldData original = WorldGenerator.Create(manifest);
+            VerifyExtentCreationForm();
             VerifyBiomes(original);
             VerifyDetailIcons(original);
             VerifyArtworkResources();

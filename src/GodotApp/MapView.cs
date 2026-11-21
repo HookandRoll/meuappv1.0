@@ -21,6 +21,7 @@ public partial class MapView : Node2D
     private WorldData? _world;
     private GlobalDataTextures? _textures;
     private Vector2 _mapSize;
+    private Vector2 _mapOrigin;
     private Vector2I _selected = new(-1, -1);
     private int _layer;
     private TectonicOverlay _tectonicOverlay = null!;
@@ -46,7 +47,9 @@ public partial class MapView : Node2D
 
         string[] args = OS.GetCmdlineUserArgs();
         string? benchmarkSize = Array.Find(args, arg => arg.StartsWith("--benchmark-size="));
-        if (benchmarkSize is not null)
+        if (Array.IndexOf(args, "--ocean-frame-review") >= 0)
+            Callable.From(RunOceanFrameReview).CallDeferred();
+        else if (benchmarkSize is not null)
             Callable.From(() => RunSizeBenchmark(int.Parse(benchmarkSize.Split('=')[1]))).CallDeferred();
         else if (Array.IndexOf(args, "--climate-relief-review") >= 0)
             Callable.From(RunClimateReliefReview).CallDeferred();
@@ -118,7 +121,9 @@ public partial class MapView : Node2D
             return;
 
         _statusTime = 0;
-        _performance.Text = $"{world.Width} × {world.Height}  ·  {Engine.GetFramesPerSecond():F0} FPS";
+        _performance.Text = world.Domain.IsAtlas
+            ? $"{world.Width} × {world.Height}  ·  {world.ActiveCount:N0} hexes  ·  {Engine.GetFramesPerSecond():F0} FPS"
+            : $"{world.Width} × {world.Height}  ·  {Engine.GetFramesPerSecond():F0} FPS";
     }
 
     public override void _UnhandledInput(InputEvent input)
@@ -169,14 +174,28 @@ public partial class MapView : Node2D
 
         Vector2 origin = new(-HexGrid.Root3 * 0.5f, -1f);
         Vector2 limit = new(HexGrid.Root3 * world.Width, 1.5f * (world.Height - 1) + 1f);
-        _surface.Polygon = new[] { origin, new Vector2(limit.X, origin.Y), limit, new Vector2(origin.X, limit.Y) };
+        bool oceanFrame = !world.Domain.IsAtlas && world.Manifest.GeneratorVersion >= 35 && world.Manifest.Generation.Extent == MapExtent.World && stage != GenerationStage.Blank;
+        _material.SetShaderParameter("world_ocean_frame", oceanFrame);
+        _material.SetShaderParameter("full_atlas_domain", world.Domain.IsAtlas);
+        _material.SetShaderParameter("atlas_flat_poles", oceanFrame);
+        uint frameSeed = unchecked((uint)world.Manifest.Seed);
+        _material.SetShaderParameter("frame_noise_offset", new Vector2(frameSeed & 65535u, frameSeed >> 16) * 0.013f);
         _mapSize = limit - origin;
+        if (oceanFrame)
+        {
+            Vector2 padding = _mapSize * 0.25f;
+            origin -= padding; limit += padding;
+            _mapSize = limit - origin;
+        }
+        _mapOrigin = origin;
+        _surface.Polygon = new[] { origin, new Vector2(limit.X, origin.Y), limit, new Vector2(origin.X, limit.Y) };
 
         SetEditorPanelVisible(false);
         ReleaseEditorPreview();
         _world = world;
         _tectonicOverlay.Reference = world.Tectonics;
         _tectonicOverlay.SymbolSize = Math.Max(2, world.Height / 80f);
+        _tectonicOverlay.MapHeight = world.Height * 1.5f;
         _tectonicOverlay.QueueRedraw();
         _layerSelect.SetItemDisabled(6, world.Tectonics is null);
         _layerSelect.SetItemTooltip(6, "Referência original: flechas = movimento; círculos = afastamento; X = colisão. Não muda ao editar o terreno.");
@@ -215,8 +234,7 @@ public partial class MapView : Node2D
         float verticalMargin = _editorPanel.Visible ? 16f : 168f;
         float zoom = Mathf.Max(0.015f, Mathf.Min((area.Size.X - 80f) / _mapSize.X, (area.Size.Y - verticalMargin) / _mapSize.Y));
         _map.Scale = Vector2.One * zoom;
-        Vector2 origin = new(-HexGrid.Root3 * 0.5f, -1f);
-        _map.Position = area.GetCenter() - _mapSize * zoom * 0.5f - origin * zoom;
+        _map.Position = area.GetCenter() - _mapSize * zoom * 0.5f - _mapOrigin * zoom;
         UpdateArtworkZoom();
     }
 

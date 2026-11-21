@@ -6,6 +6,7 @@ namespace Mapmaker.Core;
 
 public enum TerrainAlgorithm { Fractal, LandmassCenters, ContinentalSculpt }
 public enum GenerationStage { Blank, Land, Relief, Terrain }
+public enum MapExtent { Region, World }
 public enum WaterType : byte { None, Ocean, Lake, Wetland }
 public enum ReliefType : byte { Flat, Rolling, Hills, Mountains, Peak }
 public enum BiomeType : byte
@@ -20,7 +21,8 @@ public static class Biomes
 }
 
 public sealed record GenerationSettings(
-    TerrainAlgorithm Algorithm, int Continents, int LandPercent, int CoastDetail, GenerationStage Stage);
+    TerrainAlgorithm Algorithm, int Continents, int LandPercent, int CoastDetail, GenerationStage Stage,
+    MapExtent Extent = MapExtent.Region, int PolarOceanRows = 0, int ReferenceWidth = 0, int ReferenceHeight = 0);
 
 public sealed record WorldManifest(
     int WorldSaveVersion, string WorldName, int Seed, int GeneratorVersion, int Width, int Height,
@@ -31,10 +33,12 @@ public sealed class WorldData
 {
     public const int ChunkSize = 32;
     public const byte CoastFlag = 4;
-    public const int MaxWidth = 4096;
-    public const int MaxHeight = 2048;
+    public const int MaxWidth = 6144;
+    public const int MaxHeight = 3072;
 
     public WorldManifest Manifest { get; internal set; }
+    public MapDomain Domain { get; }
+    public int ActiveCount => Domain.ActiveCount;
     public int Width => Manifest.Width;
     public int Height => Manifest.Height;
     public int Count => Elevation.Length;
@@ -61,6 +65,7 @@ public sealed class WorldData
     {
         Validate(manifest);
         Manifest = manifest;
+        Domain = new MapDomain(manifest);
         int count = manifest.Width * manifest.Height;
         Elevation = new short[count];
         Water = new WaterType[count];
@@ -72,6 +77,9 @@ public sealed class WorldData
         RiverEdges = new ushort[count];
         Flags = new byte[count];
         LockMask = new ushort[count];
+        if (Domain.IsAtlas)
+            for (int i = 0; i < count; i++)
+                if (!Domain.Contains(i)) { Water[i] = WaterType.Ocean; Elevation[i] = -6000; }
         SparseEntities = JsonSerializer.SerializeToElement(new
         {
             rivers = Array.Empty<object>(), pois = Array.Empty<object>(), notes = Array.Empty<object>(),
@@ -87,8 +95,27 @@ public sealed class WorldData
             !double.IsFinite(manifest.HexDistance) || manifest.HexDistance <= 0 || manifest.DistanceUnit != "km")
             throw new ArgumentException("Nome ou escala do mundo inválido.");
         if (manifest.Generation is not { Continents: >= 1 and <= 12, LandPercent: >= 10 and <= 65, CoastDetail: >= 0 and <= 100 } options
-            || !Enum.IsDefined(options.Algorithm) || !Enum.IsDefined(options.Stage))
+            || !Enum.IsDefined(options.Algorithm) || !Enum.IsDefined(options.Stage) || !Enum.IsDefined(options.Extent))
             throw new ArgumentException("Configuração de geração inválida.");
+        int polarRows = options.PolarOceanRows;
+        int centralHeight = manifest.Height - 2 * polarRows;
+        bool atlas = manifest.GeneratorVersion >= 37 && options.Extent == MapExtent.World;
+        if ((!atlas && (manifest.Width > 4096 || centralHeight is < 32 or > 2048)) ||
+            polarRows is < 0 or > 256 || (polarRows & 1) != 0 ||
+            (polarRows > 0 && (manifest.GeneratorVersion < 36 || options.Extent != MapExtent.World || atlas)) ||
+            options.ReferenceWidth < 0 || options.ReferenceWidth > 4096 || options.ReferenceHeight < 0 || options.ReferenceHeight > 2048 ||
+            ((options.ReferenceWidth == 0) != (options.ReferenceHeight == 0)))
+            throw new ArgumentException("Faixas polares ou altura central inválidas.");
+        if (options.ReferenceWidth > 0)
+        {
+            if (!atlas || options.ReferenceWidth < 32 || options.ReferenceHeight < 32)
+                throw new ArgumentException("Tamanho de referência inválido para o atlas.");
+            var expected = MapDomain.ExpandedSize(options.ReferenceWidth, options.ReferenceHeight);
+            if (manifest.Width != expected.Width || manifest.Height != expected.Height)
+                throw new ArgumentException("As dimensões não correspondem ao atlas ampliado.");
+        }
+        if (options.Extent == MapExtent.World && (manifest.GeneratorVersion < 34 || options.Algorithm != TerrainAlgorithm.ContinentalSculpt))
+            throw new ArgumentException("O modo Mundo requer o gerador tectônico v34 ou posterior.");
         if (options.Algorithm == TerrainAlgorithm.ContinentalSculpt && manifest.GeneratorVersion < 6)
             throw new ArgumentException("A escultura continental requer a versão 6 do gerador ou posterior.");
     }

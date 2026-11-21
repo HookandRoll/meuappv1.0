@@ -13,8 +13,9 @@ public partial class WorldCreationDialog : ConfirmationDialog
     };
 
     private readonly LineEdit _name = new() { MaxLength = 120 };
-    private readonly OptionButton _size = new();
+    private readonly OptionButton _size = new() { Name = "MapSize" };
     private readonly SpinBox _distance = new() { MinValue = 0.1, MaxValue = 1000, Step = 0.1, Value = 5, Suffix = "km" };
+    private readonly OptionButton _extent = new() { Name = "MapExtent" };
     private readonly OptionButton _stage = new();
     private readonly OptionButton _algorithm = new();
     private readonly LineEdit _seed = new() { MaxLength = 11 };
@@ -22,6 +23,7 @@ public partial class WorldCreationDialog : ConfirmationDialog
     private readonly SpinBox _land = new() { MinValue = 10, MaxValue = 65, Value = 38, Suffix = "%" };
     private readonly SpinBox _coast = new() { MinValue = 0, MaxValue = 100, Value = 50, Suffix = "%" };
     private readonly Label _hint = new();
+    private readonly Label _capacityWarning = new() { Name = "WorldCapacityWarning" };
     private readonly Label _error = new();
     private readonly GridContainer _generationFields = new() { Columns = 2 };
     private WorldManifest? _existing;
@@ -42,7 +44,11 @@ public partial class WorldCreationDialog : ConfirmationDialog
             _size.AddItem(DescribeSize(size));
         _size.AddItem("Dimensões do mapa aberto");
         _size.GetPopup().SetItemDisabled(Sizes.Length, true);
-        AddField(fields, "Dimensões", _size);
+        AddField(fields, "Tamanho de referência", _size);
+        _extent.AddItem("Região — recorte aberto");
+        _extent.AddItem("Mundo — atlas completo");
+        _extent.ItemSelected += _ => RefreshOptions();
+        AddField(fields, "Tipo de mapa", _extent);
         AddField(fields, "Distância por hex", _distance);
 
         foreach (string stage in new[] { "Grade vazia", "Só terra e água", "Terra, água e relevo", "Terreno completo" })
@@ -68,10 +74,14 @@ public partial class WorldCreationDialog : ConfirmationDialog
         dice.Pressed += RollSeed;
         seedRow.AddChild(dice);
         AddField(_generationFields, "Seed", seedRow);
+        _continents.TooltipText = "Quantidade mínima de massas principais separadas por água. Ilhas menores podem surgir além desse número.";
+        _land.TooltipText = "No Mundo, a porcentagem de terra e mar exclui o oceano das placas Ártica e Antártica. Região usa todo o retângulo.";
         AddField(_generationFields, "Continentes principais", _continents);
         AddField(_generationFields, "Área de terra alvo", _land);
         AddField(_generationFields, "Irregularidade da costa", _coast);
         form.AddChild(_hint);
+        _capacityWarning.AddThemeColorOverride("font_color", new Color("#e7ba70"));
+        form.AddChild(_capacityWarning);
         _error.AddThemeColorOverride("font_color", new Color("#f1a997"));
         form.AddChild(_error);
         Confirmed += Submit;
@@ -85,10 +95,11 @@ public partial class WorldCreationDialog : ConfirmationDialog
         _name.Text = existing?.WorldName ?? "Novo mundo";
         _name.Editable = existing is null;
         _size.Disabled = existing is not null;
-        Vector2I dimensions = existing is null ? Sizes[1] : new Vector2I(existing.Width, existing.Height);
+        Vector2I dimensions = existing is null ? Sizes[1] : ReferenceSize();
         int index = Array.IndexOf(Sizes, dimensions);
         _size.SetItemText(Sizes.Length, DescribeSize(dimensions));
         _size.Select(index >= 0 ? index : Sizes.Length);
+        _extent.Select((int)(existing?.Generation.Extent ?? MapExtent.World));
         _distance.Value = existing?.HexDistance ?? 5;
         _distance.Editable = existing is null;
         _stage.SetItemDisabled((int)GenerationStage.Blank, existing is not null);
@@ -110,9 +121,18 @@ public partial class WorldCreationDialog : ConfirmationDialog
     {
         bool generate = _stage.Selected != (int)GenerationStage.Blank;
         _generationFields.Visible = generate;
-        _hint.Text = generate
-            ? "A seed reproduz o terreno. Continentes podem se unir\nou formar ilhas menores."
-            : "Cria uma grade sem geografia. Para preenchê-la,\nuse Mapa → Gerar terreno.";
+        Vector2I reference = ReferenceSize();
+        bool atlas = _extent.Selected == (int)MapExtent.World;
+        var expanded = MapDomain.ExpandedSize(reference.X, reference.Y);
+        _hint.Text = !generate
+            ? "Cria uma grade sem geografia. Para preenchê-la,\nuse Mapa → Gerar terreno."
+            : atlas
+                ? $"Mundo inteiro: {expanded.Width} × {expanded.Height}, {expanded.ActiveHexes:N0} hexes úteis.\nPlacas, terreno, clima e rios são calculados em todo o atlas."
+                : $"Região: retângulo de {reference.X} × {reference.Y}, {(long)reference.X * reference.Y:N0} hexes.\nO terreno pode continuar além das bordas do recorte.";
+        _capacityWarning.Visible = atlas;
+        _capacityWarning.Text = expanded.ActiveHexes > 8_000_000
+            ? $"Atenção: {expanded.ActiveHexes:N0} hexes úteis, mais que 4000 × 2000.\nA grade de cálculo tem {(long)expanded.Width * expanded.Height:N0} posições.\nA geração usará mais memória e poderá demorar mais."
+            : "Aviso: Mundo tem mais hexes que a Região equivalente\ne exige mais memória e tempo de geração.";
         if (generate && _size.Selected <= 1)
             _hint.Text += "\nMapas pequenos têm menos espaço para costas, placas e rios.\nPara mais detalhe natural, recomendamos 512 × 256 ou maior.";
         if (Visible)
@@ -129,20 +149,42 @@ public partial class WorldCreationDialog : ConfirmationDialog
             return;
         }
 
+        Vector2I reference = ReferenceSize();
+        bool atlas = _extent.Selected == (int)MapExtent.World;
+        var expanded = MapDomain.ExpandedSize(reference.X, reference.Y);
         var settings = new GenerationSettings(TerrainAlgorithm.ContinentalSculpt, (int)_continents.Value,
-            (int)_land.Value, (int)_coast.Value, (GenerationStage)_stage.Selected);
+            (int)_land.Value, (int)_coast.Value, (GenerationStage)_stage.Selected, (MapExtent)_extent.Selected,
+            PolarOceanRows: 0, ReferenceWidth: atlas ? reference.X : 0, ReferenceHeight: atlas ? reference.Y : 0);
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        Vector2I size = _existing is null ? Sizes[_size.Selected] : new Vector2I(_existing.Width, _existing.Height);
         var manifest = new WorldManifest(WorldFile.CurrentVersion, name, seed, WorldGenerator.Version,
-            size.X, size.Y, _existing?.HorizontalWrap ?? false, _existing?.HexDistance ?? _distance.Value,
+            atlas ? expanded.Width : reference.X, atlas ? expanded.Height : reference.Y,
+            _existing?.HorizontalWrap ?? false, _existing?.HexDistance ?? _distance.Value,
             "km", _existing?.CreatedAt ?? now, now, settings);
         Hide();
         CreateRequested?.Invoke(manifest, _existing is not null);
     }
 
+    private Vector2I ReferenceSize()
+    {
+        if (_existing is null) return Sizes[Math.Clamp(_size.Selected, 0, Sizes.Length - 1)];
+        if (_existing.Generation.ReferenceWidth > 0)
+            return new(_existing.Generation.ReferenceWidth, _existing.Generation.ReferenceHeight);
+        if (_existing.GeneratorVersion >= 37 && _existing.Generation.Extent == MapExtent.World)
+        {
+            foreach (Vector2I preset in Sizes)
+            {
+                var expanded = MapDomain.ExpandedSize(preset.X, preset.Y);
+                if (expanded.Width == _existing.Width && expanded.Height == _existing.Height) return preset;
+            }
+            return new(Math.Clamp((int)Math.Round(_existing.Width / 1.5), 32, 4096),
+                Math.Clamp((int)Math.Round(_existing.Height / 1.35), 32, 2048));
+        }
+        return new(_existing.Width, _existing.Height - 2 * _existing.Generation.PolarOceanRows);
+    }
+
     private void RollSeed() => _seed.Text = Random.Shared.Next().ToString(CultureInfo.InvariantCulture);
 
-    private Vector2I FormSize() => new(500, _generationFields.Visible ? 448 : 284);
+    private Vector2I FormSize() => new(660, _generationFields.Visible ? 640 : 400);
 
     private static string DescribeSize(Vector2I size) => $"{size.X} × {size.Y}";
 

@@ -9,7 +9,7 @@ public readonly record struct GenerationProgress(GenerationStep Step, int Percen
 
 public static partial class WorldGenerator
 {
-    public const int Version = 30;
+    public const int Version = 40;
     internal const short SculptedStraitDepth = -137;
     private const int HistogramSize = 2048;
     // Two forest growth passes read up to two hexes away each. Cleanup reads one more.
@@ -18,6 +18,8 @@ public static partial class WorldGenerator
 
     public static WorldData Create(WorldManifest manifest, Action<GenerationProgress>? progress = null)
     {
+        WorldData.Validate(manifest);
+        if (manifest.Generation.PolarOceanRows > 0) return CreatePolarWorld(manifest, progress);
         var world = new WorldData(manifest);
         if (manifest.Generation.Stage == GenerationStage.Blank)
             return world;
@@ -68,6 +70,11 @@ public static partial class WorldGenerator
             throw new ArgumentOutOfRangeException(nameof(region));
         if (world.Manifest.Generation.Stage == GenerationStage.Blank)
             return;
+        if (world.Manifest.Generation.PolarOceanRows > 0)
+        {
+            RegeneratePolarRegion(world, region, fields, progress);
+            return;
+        }
 
         int margin = world.Manifest.Generation.Stage == GenerationStage.Terrain
             ? ForestMargin + Math.Max(1, world.Height / 96) : 1;
@@ -77,6 +84,8 @@ public static partial class WorldGenerator
             margin += 2;
         if (world.Manifest.Generation.Stage == GenerationStage.Terrain && world.Manifest.GeneratorVersion >= 15)
             margin += MinimumBeachSize - 1;
+        if (world.Manifest.Generation.Stage == GenerationStage.Terrain && world.Manifest.GeneratorVersion >= 31)
+            margin += 2 * SmallBiomeLimit(world.Height);
         var area = new GenerationArea(world, ExpandRegion(world, region, margin),
             selection: region, fields: fields);
         Generate(world, area, progress);
@@ -173,9 +182,11 @@ public static partial class WorldGenerator
                     float altitude = ScoreAt(x, y) - seaLevel;
                     WaterType type = water?[cell] ?? (altitude < 0 ? WaterType.Ocean : WaterType.None);
                     return type != WaterType.None ? (short)Math.Min(-1, Math.Clamp(altitude * 2500, -6000f, 0f))
-                        : LandElevation((float)x / world.Width, (float)y / world.Height, aspect, altitude,
+                        : manifest.GeneratorVersion >= 33 && sculpt
+                            ? PlateLandElevation((float)x / world.Width, (float)y / world.Height, aspect, altitude, seed, ridges?[cell] ?? 0, manifest.HorizontalWrap).Elevation
+                            : LandElevation((float)x / world.Width, (float)y / world.Height, aspect, altitude,
                             seed, ridges?[cell], reliefDensity).Elevation;
-                }) : null;
+                }, manifest.GeneratorVersion >= 33 && sculpt ? ridges : null) : null;
         progress?.Invoke(new(GenerationStep.Elevation, 0));
         VisitChunks(area.Chunks, (i, col, row) =>
         {
@@ -190,13 +201,17 @@ public static partial class WorldGenerator
             else
             {
                 float? ridge = ridges?[row * world.Width + col];
-                (elevation, plain) = LandElevation((float)col / world.Width, (float)row / world.Height, aspect, altitude,
+                (elevation, plain) = manifest.GeneratorVersion >= 33 && sculpt
+                    ? PlateLandElevation((float)col / world.Width, (float)row / world.Height, aspect, altitude, seed, ridge ?? 0, manifest.HorizontalWrap)
+                    : LandElevation((float)col / world.Width, (float)row / world.Height, aspect, altitude,
                     seed, ridge, reliefDensity, manifest.GeneratorVersion == 27);
                 if (manifest.GeneratorVersion is >= 24 and < 26 && sculpt) elevation = NarrowRidgeElevation(elevation, ridge ?? 0, manifest.GeneratorVersion);
             }
 
             int cell = row * world.Width + col;
             if (gentleElevation is not null) elevation = gentleElevation[cell];
+            if (manifest.GeneratorVersion >= 33 && sculpt && area.Water[i] == WaterType.None && (ridges?[cell] ?? 0) < -0.3f)
+                elevation = (short)Math.Min(elevation, (short)450);
             area.Elevation[i] = area.Writes(col, row, cell, HexLocks.Elevation) ? elevation : world.Elevation[cell];
             area.Relief[i] = !area.Writes(col, row, cell, HexLocks.Relief) ? world.Relief[cell] : area.Elevation[i] switch
             {
@@ -332,7 +347,9 @@ public static partial class WorldGenerator
         bool finishRibbons = FinishesBiomeRibbons(manifest);
         RefineLandBiomes(area, openPlains, progress, finishRibbons ? 97 : 100);
         if (finishRibbons)
-            FinishBiomeRibbons(area, openPlains, progress);
+            FinishBiomeRibbons(area, openPlains, manifest.GeneratorVersion >= 31 ? null : progress);
+        if (manifest.GeneratorVersion >= 31)
+            ConsolidateSmallBiomes(area, openPlains, progress);
     }
 
     private static bool RefinesBiomeEdges(WorldManifest manifest) =>
@@ -400,13 +417,13 @@ public static partial class WorldGenerator
         }, progress, step, from, 100);
     }
 
-    internal static float TerrainNoise(float x, float y, float frequency, float aspect, bool wrap, uint seed)
+    internal static float TerrainNoise(float x, float y, float frequency, float aspect, bool wrap, uint seed, bool angular = false)
     {
         if (!wrap)
-            return Noise(x * frequency, y * frequency, seed);
+            return Noise(x * frequency, y * frequency, seed, angular);
         x -= MathF.Floor(x / aspect) * aspect;
-        return Interpolate(Noise(x * frequency, y * frequency, seed),
-            Noise((x - aspect) * frequency, y * frequency, seed), Smooth(x / aspect));
+        return Interpolate(Noise(x * frequency, y * frequency, seed, angular),
+            Noise((x - aspect) * frequency, y * frequency, seed, angular), Smooth(x / aspect));
     }
 
     private static short OrganicRidgeElevation(short generated, float ridge)
@@ -744,12 +761,12 @@ public static partial class WorldGenerator
         Noise(x, y, seed) * 0.57f + Noise(x * 2.1f, y * 2.1f, seed + 11u) * 0.27f
         + Noise(x * 4.5f, y * 4.5f, seed + 23u) * 0.11f + Noise(x * 9.3f, y * 9.3f, seed + 37u) * 0.05f;
 
-    private static float Noise(float x, float y, uint seed)
+    private static float Noise(float x, float y, uint seed, bool angular = false)
     {
         int left = (int)MathF.Floor(x);
         int top = (int)MathF.Floor(y);
-        float u = Smooth(x - left);
-        float v = Smooth(y - top);
+        float u = angular ? x - left : Smooth(x - left);
+        float v = angular ? y - top : Smooth(y - top);
         float a = Interpolate(Sample(left, top, seed), Sample(left + 1, top, seed), u);
         float b = Interpolate(Sample(left, top + 1, seed), Sample(left + 1, top + 1, seed), u);
         return Interpolate(a, b, v);
