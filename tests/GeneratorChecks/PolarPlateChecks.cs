@@ -12,7 +12,7 @@ public static partial class WorldGenerator
         foreach (int seed in new[] { 1234, 1, -77 })
         foreach (bool wrap in new[] { false, true })
         foreach (int land in new[] { 10, 38, 65 })
-        foreach (int version in new[] { 38, 39, Version })
+        foreach (int version in new[] { 38, 39, 45, Version })
         {
             var size = MapDomain.ExpandedSize(128, 64);
             var m = CheckManifest(size.Width, size.Height, wrap) with { Seed = seed, GeneratorVersion = version };
@@ -68,17 +68,24 @@ public static partial class WorldGenerator
                     throw new Exception("The full flat border is not covered by a polar plate.");
                 if (kind == PlateKind.Normal) { nonPolarCount++; continue; }
                 int i = row * world.Width + col;
-                if (world.Water[i] != WaterType.Ocean || world.Elevation[i] >= 0 || world.Biomes[i] != BiomeType.None)
+                if (version >= 46 && world.Water[i] == WaterType.None)
+                {
+                    if (world.Biomes[i] != BiomeType.Glacier || world.Elevation[i] < 0) throw new Exception("Polar land must be glacier.");
+                    continue;
+                }
+                if ((version < 46 ? world.Water[i] != WaterType.Ocean : world.Water[i] == WaterType.None) || world.Elevation[i] >= 0 || world.Biomes[i] != BiomeType.None)
                     throw new Exception("A mandatory polar plate acquired land, mountains or an island.");
             }
             float[] depths = Enumerable.Range(world.Width / 4, world.Width / 2).Select(c => bands.North(c * HexGrid.Root3)).ToArray();
             if (depths.Max() - depths.Min() < world.Height * 1.5f * 0.005f) throw new Exception("Polar border is too straight.");
             int percentageArea = version >= 39 ? nonPolarCount : world.ActiveCount;
+            int countedLand = Enumerable.Range(0, world.Count).Count(i => world.Water[i] == WaterType.None &&
+                (version < 46 || bands.KindAt(HexGrid.Center(HexGrid.FromOffset(i % world.Width, i / world.Width))) == PlateKind.Normal));
             if (nonPolarCount >= world.ActiveCount || world.Domain.PercentageAreaCount != percentageArea ||
-                world.Water.Count(w => w == WaterType.None) != percentageArea * land / 100)
+                countedLand != percentageArea * land / 100)
                 throw new Exception("Incorrect land/sea quota or polar ocean included in the v39 denominator.");
             if (version == Version && seed == 1234 && !wrap)
-                Console.WriteLine($"QUOTA: target={land}%, land={world.Water.Count(w => w == WaterType.None)}, nonpolar={nonPolarCount}, actual={100.0 * world.Water.Count(w => w == WaterType.None) / nonPolarCount:F3}%, margin plates={margins}");
+                Console.WriteLine($"QUOTA: target={land}%, nonpolar land={countedLand}, nonpolar={nonPolarCount}, actual={100.0 * countedLand / nonPolarCount:F3}%, polar ice={world.Water.Count(w => w == WaterType.None) - countedLand}, margin plates={margins}");
             var regenerated = Create(m);
             if (!tectonics.Plates.SequenceEqual(regenerated.Tectonics!.Plates) || !tectonics.Contacts.SequenceEqual(regenerated.Tectonics.Contacts))
                 throw new Exception("Polar plate generation is not deterministic.");

@@ -1,6 +1,6 @@
 # Estrutura de dados e renderer — esquema 2
 
-Esta estrutura separa os campos do mapa. Na Alpha 1.1.32, o gerador v45 reúne classificação por desnível, clima revisado, swamp e propagação dos biomas. O formato também prepara os demais biomas e características para integração futura, sem exigir reutilizar os IDs existentes.
+Esta estrutura separa os campos do mapa. A Alpha 1.1.32 reuniu classificação por desnível, clima e propagação dos biomas (v45). O desenvolvimento v46 integra os demais biomas e características usando os IDs e flags independentes; os IDs anteriores continuam estáveis.
 
 ## Campos independentes por hex
 
@@ -13,7 +13,11 @@ Esta estrutura separa os campos do mapa. Na Alpha 1.1.32, o gerador v45 reúne c
 
 Bioma, relevo visual, forma geográfica e características coexistem: por exemplo, floresta temperada sobre um planalto com cânion e escarpa. Água continua independente; gelo marinho não precisa virar terra. Os IDs existentes não foram renumerados. Valores futuros de 16 bits e bits ainda não cadastrados são preservados ao copiar e salvar.
 
-`LandformType` reserva planície, planície ondulada, planalto, escarpa/serra, morros, montanhas, pico e vale. Features reservam vulcão, escarpa, cânion, mesas rochosas e gelo marinho. A classificação das formas geográficas está ativa na v41; a geração automática dessas features ainda não foi ativada.
+`LandformType` contém planície, planície ondulada, planalto, escarpa/serra, morros, montanhas, pico, vale, encosta e sopé. A geração de vulcões, cânions e rochas de badlands está ativa desde a v46; as flags de gelo marinho e escarpa permanecem reservadas para geração automática futura.
+
+## Regiões nomeadas — v50
+
+`geography.json` armazena o catálogo versionado de continentes, ilhas, arquipélagos, oceanos, mares e lagos. `layers/geographic_regions.bin` armazena um ID de 32 bits por posição. As duas entradas são opcionais em conjunto, preservando arquivos anteriores. IDs zero ficam fora do domínio; todo hex útil recebe uma região. A camada não compartilha bits nem IDs com biomas ou features. Nomes, categorias, áreas e posições dos rótulos são persistidos. A camada visual envia cores derivadas à GPU; os IDs completos permanecem disponíveis no núcleo. Veja as [regras e validação](../results/Regioes_Geograficas_v50.md).
 
 ## Planos enviados à GPU
 

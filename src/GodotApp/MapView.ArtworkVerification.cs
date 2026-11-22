@@ -10,9 +10,9 @@ public partial class MapView
         Require(MapArtwork.Variants == 3, "Shader e atlas precisam usar três variações.");
         var groups = new[]
         {
-            ("tiles", false, new[] { "beach", "grasslands", "temperate_forest", "rainforest", "savanna", "steppe", "desert", "taiga", "tundra", "alpine", "shallow_ocean", "lake", "wetland", "deep_ocean", "swamp" }),
-            ("relief", true, new[] { "rolling_hills", "hills", "mountains", "peaks", "snowy_peaks", "escarpment" }),
-            ("vegetation", true, new[] { "temperate_trees", "rainforest_canopy", "taiga_pines", "savanna_trees", "desert_scrub", "wetland_reeds", "swamp_trees" }),
+            ("tiles", false, new[] { "beach", "grasslands", "temperate_forest", "rainforest", "savanna", "steppe", "desert", "taiga", "tundra", "alpine", "shallow_ocean", "lake", "wetland", "deep_ocean", "swamp", "glacier", "seasonal_forest", "shrubland", "badlands", "temperate_rainforest", "mangrove", "bog", "oasis", "volcanic", "salt_flat" }),
+            ("relief", true, new[] { "rolling_hills", "hills", "mountains", "peaks", "snowy_peaks", "escarpment", "volcano", "canyon", "badland_rocks" }),
+            ("vegetation", true, new[] { "temperate_trees", "rainforest_canopy", "taiga_pines", "savanna_trees", "desert_scrub", "wetland_reeds", "swamp_trees", "oasis_palms", "mangrove_trees", "seasonal_trees", "shrubland_bushes" }),
             ("Icons", true, MapDetailIcons.FileNames)
         };
         int count = 0;

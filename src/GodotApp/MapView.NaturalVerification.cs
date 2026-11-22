@@ -518,7 +518,7 @@ public partial class MapView
         Require(WorldGenerator.ReadRivers(desert).Length == 0, "Deserto uniforme criou rede perene de riachos.");
         int[] versions = OS.GetCmdlineUserArgs().Contains("--current-generator-only")
             ? new[] { WorldGenerator.Version }
-            : new[] { 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45 };
+            : new[] { 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46 };
         foreach (int version in versions)
         foreach (int seed in new[] { 1234, 1, -77 })
         foreach (int land in new[] { 30, 40, 50 })

@@ -15,6 +15,9 @@ public static partial class WorldGenerator
         {
             int requested = _settings.Continents;
             if (requested <= 1) return;
+            // At extreme land coverage there may be nowhere to compensate a
+            // separating channel. Preserve the quota and existing plate surface.
+            WaterType[]? original = _manifest.GeneratorVersion >= 49 && _settings.LandPercent > 65 ? (WaterType[])water.Clone() : null;
             int land = water.Count(w => w == WaterType.None);
             int minimum = Math.Max(3, land / (requested * 12));
             var visited = new bool[water.Length];
@@ -155,7 +158,11 @@ public static partial class WorldGenerator
                 Hex hex = HexAt(i);
                 for (int d = 0; d < 6; d++) { int n = Neighbor(hex, d); if (n >= 0) Offer(n); }
             }
-            if (removed != 0) throw new InvalidOperationException("Não foi possível separar os continentes mantendo a área de terra.");
+            if (removed != 0)
+            {
+                if (original is not null) { Array.Copy(original, water, water.Length); return; }
+                throw new InvalidOperationException("Não foi possível separar os continentes mantendo a área de terra.");
+            }
         }
     }
 }

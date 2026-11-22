@@ -171,7 +171,9 @@ public partial class MapView
         FinishGesture();
         WorldRegion? selection = _sourceSelection;
         _world = source;
+        _regionLabels.World=source;if(_layer==7)RefreshRegions();
         _riverOverlay.World = source;
+        _volcanoOverlay.SetWorld(source, _artwork);
         _history = _sourceHistory;
         _dirty = _sourceDirty;
         ReleaseEditorPreview();
@@ -657,6 +659,7 @@ public partial class MapView
 
     private void EditChanged(bool updateTerrain, bool updateLocks, bool previewReady = false, bool updateClimate = false)
     {
+        if(updateTerrain && _world is not null) { _world.GeographyDirty=true;if(_layer==7)RefreshRegions(); }
         _riverOverlay.World = _world;
         _riverOverlay.QueueRedraw();
         _dirty = _initiallyDirty || _history!.Revision != _savedRevision;
@@ -665,6 +668,7 @@ public partial class MapView
         {
             if (_editorPreview is not null)
             {
+                if (updateTerrain) _volcanoOverlay.SetWorld(world, _artwork);
                 _draftTerrainChanged |= updateTerrain;
                 _draftLocksChanged |= updateLocks;
                 _draftClimateChanged |= updateClimate;

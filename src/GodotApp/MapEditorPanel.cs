@@ -73,7 +73,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
     {
         MouseForcePassScrollEvents = false;
         CustomMinimumSize = new Vector2(PanelWidth, 0);
-        AddThemeStyleboxOverride("panel", Surface(new Color("#1c1712"), new Color("#5e4c36"), 6, 7));
+        AddThemeStyleboxOverride("panel", MenuTheme.Wood(7, 7));
         var layout = Row(this, 7);
         var stack = Stack(5);
         stack.SizeFlagsHorizontal = SizeFlags.ExpandFill;
@@ -431,7 +431,8 @@ internal sealed partial class MapEditorPanel : PanelContainer
         _palette.AddThemeConstantOverride("v_separation", 3);
         section.AddChild(_palette);
         string[] tiles = { "beach", "grasslands", "temperate_forest", "rainforest", "savanna",
-            "steppe", "desert", "taiga", "tundra", "alpine" };
+            "steppe", "desert", "taiga", "tundra", "alpine", "swamp", "glacier", "seasonal_forest", "shrubland",
+            "badlands", "temperate_rainforest", "mangrove", "bog", "oasis", "volcanic", "salt_flat" };
         for (int i = 0; i < tiles.Length; i++)
         {
             var biome = (BiomeType)(i + 1);
@@ -690,6 +691,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
         foreach (var (field, label) in EditableFields)
             _field.AddItem(label, (int)field);
         _field.AddItem("Rios", (int)HexLocks.Rivers);
+        _field.AddItem("Características geográficas", (int)HexLocks.Features);
         _regenerate = ActionButton(section, "Regenerar seleção", accent: true, disabled: true);
         _regenerate.Pressed += () => RegenerationRequested?.Invoke();
         _regenerate.CustomMinimumSize = new Vector2(0, 33);

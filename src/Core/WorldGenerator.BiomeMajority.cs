@@ -4,8 +4,7 @@ namespace Mapmaker.Core;
 
 public static partial class WorldGenerator
 {
-    private static bool MajorityBiome(BiomeType biome) => biome is not
-        (BiomeType.None or BiomeType.Beach or BiomeType.Alpine or BiomeType.Swamp) && Enum.IsDefined(biome);
+    private static bool MajorityBiome(BiomeType biome) => !ProtectedHabitat(biome) && Enum.IsDefined(biome);
 
     private static void PropagateBiomeMajority(GenerationArea area, bool[] openPlains)
     {

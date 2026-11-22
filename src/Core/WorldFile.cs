@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
@@ -38,6 +40,15 @@ public static class WorldFile
                     using (var entry = archive.CreateEntry("manifest.json").Open())
                         JsonSerializer.Serialize(entry, manifest, JsonOptions);
                     WriteLayers(archive, world);
+                    if (world.Manifest.Generation.Stage != GenerationStage.Blank)
+                    {
+                        if(world.Geography is not null && world.Geography.SourceHash!=GeographicRegions.SurfaceHash(world))world.GeographyDirty=true;
+                        var geography = GeographicRegions.Get(world);
+                        using(var regions=archive.CreateEntry("geography.json").Open())
+                            JsonSerializer.Serialize(regions,new { geography.Version, geography.Regions },JsonOptions);
+                        using var cells=archive.CreateEntry("layers/geographic_regions.bin").Open();
+                        cells.Write(MemoryMarshal.AsBytes(geography.CellIds.AsSpan()));
+                    }
                     using (var entry = archive.CreateEntry("sparse_entities.json").Open())
                         JsonSerializer.Serialize(entry, world.SparseEntities);
                     if (world.Tectonics is not null)
@@ -101,6 +112,43 @@ public static class WorldFile
         if (manifest.Generation.Stage != GenerationStage.Blank)
             world.RebuildCoast();
         WorldGenerator.RebuildRivers(world);
+        var regionEntry=archive.GetEntry("geography.json");
+        var cellEntry=archive.GetEntry("layers/geographic_regions.bin");
+        if ((regionEntry is null)!=(cellEntry is null)) throw new InvalidDataException("Camada de regiões incompleta.");
+        if(regionEntry is not null && cellEntry is not null)
+        {
+            if(regionEntry.Length>Math.Max(MaxSparseBytes,(long)world.Count*256) || cellEntry.Length!=(long)world.Count*4)
+                throw new InvalidDataException("Tamanho inválido da camada de regiões.");
+            using var regions=regionEntry.Open();
+            var catalogue=JsonSerializer.Deserialize<GeographicRegions>(regions,JsonOptions) ?? throw new InvalidDataException("Regiões inválidas.");
+            var ids=new int[world.Count]; using var cells=cellEntry.Open(); cells.ReadExactly(MemoryMarshal.AsBytes(ids.AsSpan()));
+            if(catalogue.Version is < 1 || catalogue.Version>GeographicRegions.AlgorithmVersion || catalogue.Regions is null || catalogue.Regions.Length>world.Count)
+                throw new InvalidDataException("Versão de regiões inválida.");
+            var known=new System.Collections.Generic.HashSet<int>();
+            foreach(var r in catalogue.Regions)
+                if(r is null || r.Id<=0 || !known.Add(r.Id) || !Enum.IsDefined(r.Kind) || string.IsNullOrWhiteSpace(r.Name) || r.Name.Length>80 ||
+                    r.Name.Any(char.IsControl) || !world.Domain.Contains(r.Anchor) || r.Cells<=0 || r.AreaKm2<=0 || !double.IsFinite(r.AreaKm2) || !double.IsFinite(r.MeanElevation) ||
+                    r.Plate < -1 || (r.Plate>=0 && (world.Tectonics is null || r.Plate>=world.Tectonics.Plates.Length)))
+                    throw new InvalidDataException("Registro de região inválido.");
+            var counts=new System.Collections.Generic.Dictionary<int,int>();
+            var categories=catalogue.Regions.ToDictionary(r=>r.Id,r=>r.Kind);
+            for(int i=0;i<ids.Length;i++)
+            {
+                if(ids[i]<0 || (ids[i]!=0 && (!known.Contains(ids[i]) || !world.Domain.Contains(i))) || (ids[i]==0 && world.Domain.Contains(i)))
+                    throw new InvalidDataException("ID de região inválido.");
+                if(ids[i]==0)continue;
+                counts[ids[i]]=counts.GetValueOrDefault(ids[i])+1;
+                var kind=categories[ids[i]];
+                bool land=kind is RegionKind.Continent or RegionKind.Island or RegionKind.Archipelago;
+                if(land!=(world.Water[i]==WaterType.None) ||
+                    ((kind is RegionKind.Ocean or RegionKind.Sea) && world.Water[i]!=WaterType.Ocean) ||
+                    (kind==RegionKind.Lake && world.Water[i]==WaterType.Ocean))
+                    throw new InvalidDataException("Região incompatível com a superfície.");
+            }
+            foreach(var r in catalogue.Regions)
+                if(counts.GetValueOrDefault(r.Id)!=r.Cells || ids[r.Anchor]!=r.Id)throw new InvalidDataException("Área ou posição da região inválida.");
+            world.Geography=new() { Version=catalogue.Version, CellIds=ids, Regions=catalogue.Regions, SourceHash=GeographicRegions.SurfaceHash(world) };
+        }
         return world;
     }
 

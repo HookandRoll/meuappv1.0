@@ -4,7 +4,7 @@ namespace Mapmaker.Core;
 
 public static partial class WorldGenerator
 {
-    private static void RoughenBiomeBorders(GenerationArea area, uint seed)
+    private static void RoughenBiomeBorders(GenerationArea area, uint seed, int version = 44)
     {
         var source = (BiomeType[])area.Biomes.Clone();
         int radius = Math.Max(1, area.WorldHeight / 128);
@@ -13,7 +13,7 @@ public static partial class WorldGenerator
             int x = area.WorldColumn(col), y = area.WorldRow(row), cell = y * area.WorldWidth + x;
             // Rebuild the halo too: consolidation reads its neighbors before
             // CopyRegionTo applies the selection and locks to the real world.
-            if (area.Water[i] != WaterType.None || source[i] == BiomeType.Beach || area.Locked(cell, HexLocks.Biome)) return;
+            if (area.Water[i] != WaterType.None || (ProtectedHabitat(source[i]) && source[i] != BiomeType.Alpine) || area.Locked(cell, HexLocks.Biome)) return;
             float aspect = area.WorldWidth / (float)area.WorldHeight;
             float field = TerrainNoise(x / (float)area.WorldHeight, y / (float)area.WorldHeight, 31, aspect,
                 area.Wrap, seed ^ 0xA39D71C5u);
@@ -23,7 +23,7 @@ public static partial class WorldGenerator
             int n = area.Neighbor(area.WorldHex(col, row), direction, steps);
             if (n < 0 || area.Water[n] != WaterType.None || source[n] == source[i] || source[n] == BiomeType.Beach) return;
             var biome = source[n];
-            bool fits = biome == BiomeType.Alpine ? area.Elevation[i] >= 2100 && area.Temperature[i] <= 55
+            bool fits = biome == BiomeType.Alpine ? area.Elevation[i] >= (version >= 46 ? 3800 : 2100) && area.Temperature[i] <= 55
                 : FitsBiomeClimate(biome, area.Temperature[i], area.Rainfall[i]);
             if (fits) area.Biomes[i] = biome;
         }, null, GenerationStep.Biomes, 0, 100);

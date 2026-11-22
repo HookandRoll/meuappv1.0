@@ -13,6 +13,7 @@ uniform vec2 boundary_noise_offset = vec2(0.0);
 // Internal renderer round-trip check; zero during normal use.
 uniform int format_probe = 0;
 uniform sampler2D terrain_data : filter_nearest, repeat_disable;
+uniform sampler2D region_data : filter_nearest, repeat_disable;
 uniform sampler2D climate_data : filter_nearest, repeat_disable;
 uniform sampler2D detail_data : filter_nearest, repeat_disable;
 uniform sampler2D lock_data : filter_nearest, repeat_disable;
@@ -274,6 +275,16 @@ vec3 biome_color(float id) {
     if (id == 9.0) return vec3(0.54, 0.56, 0.51); // Tundra
     if (id == 10.0) return vec3(0.81, 0.84, 0.83); // Alpine snow
     if (id == 11.0) return vec3(0.23, 0.29, 0.19); // Wooded swamp
+    if (id == 12.0) return vec3(0.80, 0.87, 0.90);
+    if (id == 13.0) return vec3(0.29, 0.36, 0.17);
+    if (id == 14.0) return vec3(0.49, 0.43, 0.27);
+    if (id == 15.0) return vec3(0.58, 0.37, 0.25);
+    if (id == 16.0) return vec3(0.18, 0.31, 0.19);
+    if (id == 17.0) return vec3(0.24, 0.31, 0.22);
+    if (id == 18.0) return vec3(0.40, 0.31, 0.20);
+    if (id == 19.0) return vec3(0.32, 0.43, 0.23);
+    if (id == 20.0) return vec3(0.22, 0.21, 0.23);
+    if (id == 21.0) return vec3(0.86, 0.83, 0.77);
     return vec3(0.35, 0.41, 0.21); // Grasslands
 }
 
@@ -354,9 +365,14 @@ vec3 ocean_color(float distance_to_land, vec2 tile_dx, vec2 tile_dy) {
     vec4 deep_b = textureGrad(ground_art, vec3(uv_b, float(DEEP_OCEAN_ART * VARIANTS + 1)), tile_dx / repeat_b, tile_dy / repeat_b);
     vec4 shallow_a = textureGrad(ground_art, vec3(uv_a, float(SHALLOW_OCEAN_ART * VARIANTS)), tile_dx / repeat_a, tile_dy / repeat_a);
     vec4 shallow_b = textureGrad(ground_art, vec3(uv_b, float(SHALLOW_OCEAN_ART * VARIANTS + 1)), tile_dx / repeat_b, tile_dy / repeat_b);
+    vec2 uv_c = fract(world_uv / repeat_a + vec2(0.61, 0.17));
+    vec4 deep_c = textureGrad(ground_art, vec3(uv_c, float(DEEP_OCEAN_ART * VARIANTS + 2)), tile_dx / repeat_a, tile_dy / repeat_a);
+    vec4 shallow_c = textureGrad(ground_art, vec3(uv_c, float(SHALLOW_OCEAN_ART * VARIANTS + 2)), tile_dx / repeat_a, tile_dy / repeat_a);
+    vec3 variant_weights = vec3(0.34) + sin(vec3(coast_noise(map_position, 0.027) * 3.14159) + vec3(0.0, 2.0944, 4.1888)) * 0.30;
+    variant_weights /= dot(variant_weights, vec3(1.0));
 
-    vec3 deep_col = mix(OCEAN, mix(deep_a.rgb, deep_b.rgb, 0.45), deep_a.a);
-    vec3 shallow_col = mix(SHALLOW, mix(shallow_a.rgb, shallow_b.rgb, 0.45), shallow_a.a);
+    vec3 deep_col = mix(OCEAN, deep_a.rgb * variant_weights.x + deep_b.rgb * variant_weights.y + deep_c.rgb * variant_weights.z, deep_a.a);
+    vec3 shallow_col = mix(SHALLOW, shallow_a.rgb * variant_weights.x + shallow_b.rgb * variant_weights.y + shallow_c.rgb * variant_weights.z, shallow_a.a);
     return mix(deep_col, shallow_col, shallow);
 }
 
@@ -414,9 +430,15 @@ vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, v
     float shared_layout = shared_hex ? smoothstep(0.30, 0.57, detail_zoom) : 0.0;
 
     // 1. Continuous 2.5D Overlapping Mountain Ranges & Hills (Battle Brothers organic randomized massif layout)
-    if (show_relief && (surface & 64) != 0) {
+    // Volcano centers are drawn once by VolcanoOverlay, above this entire pass.
+    bool volcano_center = (surface & 16) == 0 && (surface & 8) != 0 && (surface & 7) == 1;
+    if (show_relief && (surface & 64) != 0 && !volcano_center) {
         int base_relief = (surface & 32) != 0 ? 4 : int(unpack16(catalog_entry(relief, 1).rg));
         if (data.landform == 4 && (surface & 16) != 0) base_relief = 5;
+        if ((surface & 16) == 0) {
+            int special = surface & 7;
+            if (special >= 1 && special <= 3) base_relief = 5 + special;
+        }
         int variant = int(rank % uint(VARIANTS));
         int art = base_relief * VARIANTS + variant;
 
@@ -578,17 +600,27 @@ vec3 terrain_color(vec2 axial, TerrainSample current, ivec2 current_hex, vec2 ti
     ivec3 types = ivec3(water_type(a), water_type(b), water_type(c));
     int current_type = water_type(current);
     vec3 dry_weights = weights * vec3(equal(types, ivec3(0)));
-    vec3 water_weights = weights * vec3(equal(types, ivec3(current_type)));
+    float ocean_fraction = dot(weights, vec3(equal(types, ivec3(1))));
+    float lake_fraction = dot(weights, vec3(equal(types, ivec3(2))));
+    int shore_type = current_type == 0 ? (ocean_fraction >= lake_fraction ? 1 : 2) : current_type;
+    vec3 water_weights = weights * vec3(equal(types, ivec3(shore_type)));
     float land_fraction = dot(dry_weights, vec3(1.0));
     float water_fraction = dot(water_weights, vec3(1.0));
-    bool shore = (current_type == 1 || current_type == 2)
+    // Evaluate the same coast on both sides of the hex edge. The bounded
+    // feather and sand band fall off before reaching a one-hex island's core.
+    bool shore = (shore_type == 1 || shore_type == 2)
         && land_fraction > 0.0 && water_fraction > 0.0 && land_fraction + water_fraction > 0.99999;
 
     vec3 water = vec3(0.0);
-    if (current_type != 0) {
-        if (current_type == 1) {
+    if (current_type != 0 || shore) {
+        if (shore_type == 1) {
             float distance_to_land = dot(weights, vec3(shelf_distance(hex_a), shelf_distance(hex_b), shelf_distance(hex_c)));
             water = ocean_color(distance_to_land, tile_dx, tile_dy);
+        } else if (shore && shore_type == 2) {
+            vec3 lake_a = water_weights.x > 0.0 ? ground_color(a, hex_a, tile_dx, tile_dy) : vec3(0.0);
+            vec3 lake_b = water_weights.y > 0.0 ? ground_color(b, hex_b, tile_dx, tile_dy) : vec3(0.0);
+            vec3 lake_c = water_weights.z > 0.0 ? ground_color(c, hex_c, tile_dx, tile_dy) : vec3(0.0);
+            water = (lake_a * water_weights.x + lake_b * water_weights.y + lake_c * water_weights.z) / water_fraction;
         } else {
             water = ground_color(current, current_hex, tile_dx, tile_dy);
         }
@@ -676,7 +708,7 @@ void fragment() {
     vec3 color = vec3(0.055, 0.047, 0.038);
 
     if (inside(offset)) {
-        if (editor_preview && layer != 2 && layer != 3) {
+        if (editor_preview && layer != 2 && layer != 3 && layer != 7) {
             ivec3 preview_offset = ivec3(offset.x, offset.y % editor_band_height, offset.y / editor_band_height);
             vec4 data = texelFetch(editor_data, preview_offset, 0);
             vec4 surface = texelFetch(editor_data, preview_offset + ivec3(0, editor_band_height, 0), 0);
@@ -717,6 +749,8 @@ void fragment() {
             color = layer == 2
                 ? mix(vec3(0.23, 0.49, 0.69), vec3(0.94, 0.46, 0.24), clamp((unpack16(data.rg) - 32468.0) / 650.0, 0.0, 1.0))
                 : mix(vec3(0.75, 0.56, 0.35), vec3(0.14, 0.42, 0.63), clamp(unpack16(data.ba) / 3000.0, 0.0, 1.0));
+        } else if (layer == 7) {
+            color = texelFetch(region_data, offset, 0).rgb;
         } else {
             float locks = round(texelFetch(lock_data, offset, 0).r * 255.0);
             color = locks >= 2.0 ? vec3(0.69, 0.31, 0.37)

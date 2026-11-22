@@ -19,8 +19,21 @@ catch (Exception ex)
 
 static void RunChecks(string[] args)
 {
+if (args.Contains("--atlas-spacing-only")) { WorldGenerator.CheckAtlasSpacing(args.Contains("--spacing-review")); return; }
+if (args.Contains("--atlas-only")) { WorldGenerator.CheckFullAtlas(); return; }
+if (args.Contains("--ocean-islands-only")) { WorldGenerator.CheckOceansAndSmallIslands(args.Contains("--island-review")); return; }
+if (args.Contains("--atlas-islands-only")) { WorldGenerator.CheckAtlasArchipelagos(args.Contains("--island-review")); return; }
+if (args.Contains("--plate-options-only")) { WorldGenerator.CheckPlateOptions(); return; }
+if (args.Contains("--regions-only")) { WorldGenerator.CheckGeographicRegions(); return; }
+if (args.Contains("--land-range-only")) { WorldGenerator.CheckLandSliderRange(); return; }
+if (args.Contains("--contacts-only")) { WorldGenerator.CheckPlateTerrain(); return; }
 WorldGenerator.CheckExtendedWorldFormat();
 if (args.Contains("--format-only")) return;
+WorldGenerator.CheckGeographicRegions();
+WorldGenerator.CheckOceansAndSmallIslands();
+WorldGenerator.CheckAtlasArchipelagos();
+WorldGenerator.CheckExpandedBiomes();
+if (args.Contains("--expanded-only")) return;
 WorldGenerator.CheckBiomeMajority();
 if (args.Contains("--majority-only")) return;
 WorldGenerator.CheckSwampMargins();
@@ -36,6 +49,7 @@ if (args.Contains("--landforms-only")) return;
 WorldGenerator.CheckBiomeConsolidation();
 WorldGenerator.CheckWorldExtent();
 WorldGenerator.CheckFullAtlas();
+WorldGenerator.CheckAtlasSpacing();
 WorldGenerator.CheckMandatoryPolarPlates();
 WorldGenerator.CheckPolarOcean();
 WorldGenerator.CheckContinentSeparation();

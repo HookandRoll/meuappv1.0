@@ -13,7 +13,8 @@ public partial class MapView
 {
     private async void RunSizeBenchmark(int width)
     {
-        string output = "results/performance-all-sizes-v29";
+        bool releaseAtlas = OS.GetCmdlineUserArgs().Contains("--release-atlas");
+        string output = releaseAtlas ? $"results/performance-atlas-v{WorldGenerator.Version}" : "results/performance-all-sizes-v29";
         string savePath = Path.Combine(Path.GetTempPath(), "perf-" + Guid.NewGuid() + ".world");
         try
         {
@@ -25,6 +26,15 @@ public partial class MapView
             // Return no world from the task: Task<WorldData> could keep its result
             // alive at the baseline and release it during the measured generation.
             await Task.Run(() => { _ = WorldGenerator.Create(manifest with { Width = 128, Height = 64 }); });
+            if (releaseAtlas)
+            {
+                var size = MapDomain.ExpandedSize(width, width / 2);
+                manifest = manifest with { Width = size.Width, Height = size.Height, Generation = manifest.Generation with
+                {
+                    Extent = MapExtent.World, ReferenceWidth = width, ReferenceHeight = width / 2,
+                    LandPercent = WorldCreationDialog.DefaultLandPercent, CoastDetail = WorldCreationDialog.DefaultCoastDetail
+                } };
+            }
             long baselineManaged = GC.GetTotalMemory(true);
             var timer = Stopwatch.StartNew();
             int lastStep = -1;
@@ -42,6 +52,21 @@ public partial class MapView
             InstallWorld(world, buffers); RefreshInterface(); SetLayer(0); FitMap();
             await NextDraw(); await NextDraw();
             double rendererSeconds = timer.Elapsed.TotalSeconds;
+            if (releaseAtlas)
+            {
+                using var screenshot = GetViewport().GetTexture().GetImage();
+                string stem = $"atlas-{width}x{width / 2}";
+                Require(screenshot.SavePng(Path.Combine(output, stem + ".png")) == Error.Ok, "Falha ao salvar a captura do atlas.");
+                using var process = Process.GetCurrentProcess();
+                File.WriteAllText(Path.Combine(output, stem + ".json"), JsonSerializer.Serialize(new
+                {
+                    manifest.GeneratorVersion, manifest.Seed, manifest.Generation, world.Width, world.Height, world.ActiveCount,
+                    generationSeconds, rendererSeconds, peakProcessWorkingSetBytes = process.PeakWorkingSet64
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                GD.Print($"ATLAS {stem} PASSED: generation={generationSeconds:F3}s renderer={rendererSeconds:F3}s");
+                GetTree().Quit();
+                return;
+            }
             for (int i = 0; i < 20; i++) await NextDraw();
             var fitScale = _map.Scale;
             var fitPosition = _map.Position;

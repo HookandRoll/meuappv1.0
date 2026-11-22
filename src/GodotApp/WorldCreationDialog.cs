@@ -7,6 +7,8 @@ namespace Mapmaker.GodotApp;
 
 public partial class WorldCreationDialog : ConfirmationDialog
 {
+    internal const int DefaultLandPercent = 25;
+    internal const int DefaultCoastDetail = 80;
     internal static readonly Vector2I[] Sizes =
     {
         new(128, 64), new(256, 128), new(512, 256), new(1024, 512), new(2048, 1024), new(4096, 2048)
@@ -20,8 +22,8 @@ public partial class WorldCreationDialog : ConfirmationDialog
     private readonly OptionButton _algorithm = new();
     private readonly LineEdit _seed = new() { MaxLength = 11 };
     private readonly SpinBox _continents = new() { MinValue = 1, MaxValue = 12, Value = 3 };
-    private readonly SpinBox _land = new() { MinValue = 10, MaxValue = 65, Value = 38, Suffix = "%" };
-    private readonly SpinBox _coast = new() { MinValue = 0, MaxValue = 100, Value = 50, Suffix = "%" };
+    private readonly HSlider _land = new() { Name = "LandPercent", MinValue = 0, MaxValue = 100, Step = 5, Value = DefaultLandPercent, TickCount = 21, TicksOnBorders = true };
+    private readonly HSlider _coast = new() { Name = "CoastDetail", MinValue = 0, MaxValue = 100, Step = 10, Value = DefaultCoastDetail, TickCount = 11, TicksOnBorders = true };
     private readonly Label _hint = new();
     private readonly Label _capacityWarning = new() { Name = "WorldCapacityWarning" };
     private readonly Label _error = new();
@@ -75,10 +77,11 @@ public partial class WorldCreationDialog : ConfirmationDialog
         seedRow.AddChild(dice);
         AddField(_generationFields, "Seed", seedRow);
         _continents.TooltipText = "Quantidade mínima de massas principais separadas por água. Ilhas menores podem surgir além desse número.";
-        _land.TooltipText = "No Mundo, a porcentagem de terra e mar exclui o oceano das placas Ártica e Antártica. Região usa todo o retângulo.";
+        _land.TooltipText = "Alvo de terra. No Mundo, a faixa polar fica fora do cálculo e as margens oceânicas são preservadas, limitando os valores altos. Região usa todo o retângulo.";
         AddField(_generationFields, "Continentes principais", _continents);
-        AddField(_generationFields, "Área de terra alvo", _land);
-        AddField(_generationFields, "Irregularidade da costa", _coast);
+        AddField(_generationFields, "Área de terra alvo", PercentageSlider(_land));
+        AddField(_generationFields, "Irregularidade da costa", PercentageSlider(_coast));
+        _land.ValueChanged += _ => RefreshOptions();
         form.AddChild(_hint);
         _capacityWarning.AddThemeColorOverride("font_color", new Color("#e7ba70"));
         form.AddChild(_capacityWarning);
@@ -106,8 +109,8 @@ public partial class WorldCreationDialog : ConfirmationDialog
         _stage.Select((int)GenerationStage.Terrain);
         _algorithm.Select((int)TerrainAlgorithm.ContinentalSculpt);
         _continents.Value = existing?.Generation.Continents ?? 3;
-        _land.Value = existing?.Generation.LandPercent ?? 38;
-        _coast.Value = existing?.Generation.CoastDetail ?? 50;
+        _land.Value = existing?.Generation.LandPercent ?? DefaultLandPercent;
+        _coast.Value = existing?.Generation.CoastDetail ?? DefaultCoastDetail;
         if (existing is null)
             RollSeed();
         else
@@ -133,8 +136,10 @@ public partial class WorldCreationDialog : ConfirmationDialog
         _capacityWarning.Text = expanded.ActiveHexes > 8_000_000
             ? $"Atenção: {expanded.ActiveHexes:N0} hexes úteis, mais que 4000 × 2000.\nA grade de cálculo tem {(long)expanded.Width * expanded.Height:N0} posições.\nA geração usará mais memória e poderá demorar mais."
             : "Aviso: Mundo tem mais hexes que a Região equivalente\ne exige mais memória e tempo de geração.";
-        if (generate && _size.Selected <= 1)
+        if (generate && _size.Selected <= 1 && !(atlas && _land.Value > 65))
             _hint.Text += "\nMapas pequenos têm menos espaço para costas, placas e rios.\nPara mais detalhe natural, recomendamos 512 × 256 ou maior.";
+        if (generate && atlas && _land.Value > 65)
+            _hint.Text += "\nO alvo respeita as margens oceânicas obrigatórias;\na área de terra efetiva pode ficar abaixo do valor escolhido.";
         if (Visible)
             Size = FormSize();
     }
@@ -183,6 +188,18 @@ public partial class WorldCreationDialog : ConfirmationDialog
     }
 
     private void RollSeed() => _seed.Text = Random.Shared.Next().ToString(CultureInfo.InvariantCulture);
+
+    private static Control PercentageSlider(HSlider slider)
+    {
+        var row = new HBoxContainer();
+        var value = new Label { Text = $"{slider.Value:0}%", CustomMinimumSize = new Vector2(52, 0), HorizontalAlignment = HorizontalAlignment.Right };
+        slider.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        slider.CustomMinimumSize = new Vector2(220, 30);
+        row.TooltipText = slider.TooltipText;
+        row.AddChild(slider); row.AddChild(value);
+        slider.ValueChanged += v => value.Text = $"{v:0}%";
+        return row;
+    }
 
     private Vector2I FormSize() => new(660, _generationFields.Visible ? 640 : 400);
 

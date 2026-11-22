@@ -9,14 +9,22 @@ internal sealed class MapArtwork : IDisposable
 
     private readonly Texture2DArray _ground = Load("tiles", 512, false,
         "beach", "grasslands", "temperate_forest", "rainforest", "savanna", "steppe", "desert",
-        "taiga", "tundra", "alpine", "shallow_ocean", "lake", "wetland", "deep_ocean", "swamp");
+        "taiga", "tundra", "alpine", "shallow_ocean", "lake", "wetland", "deep_ocean", "swamp",
+        "glacier", "seasonal_forest", "shrubland", "badlands", "temperate_rainforest", "mangrove", "bog", "oasis", "volcanic", "salt_flat");
     private readonly Texture2DArray _relief = Load("relief", 256, true,
-        "rolling_hills", "hills", "mountains", "peaks", "snowy_peaks", "escarpment");
+        "rolling_hills", "hills", "mountains", "peaks", "snowy_peaks", "escarpment", "volcano", "canyon", "badland_rocks");
     private readonly Texture2DArray _vegetation = Load("vegetation", 256, true,
-        "temperate_trees", "rainforest_canopy", "taiga_pines", "savanna_trees", "desert_scrub", "wetland_reeds", "swamp_trees");
+        "temperate_trees", "rainforest_canopy", "taiga_pines", "savanna_trees", "desert_scrub", "wetland_reeds", "swamp_trees",
+        "oasis_palms", "mangrove_trees", "seasonal_trees", "shrubland_bushes");
     private readonly Texture2DArray _details = Load("Icons", 128, true, MapDetailIcons.FileNames);
 
     private readonly Texture2DArray _catalog = LoadCatalog();
+
+    internal Texture2D CreateVolcanoTexture(int variant)
+    {
+        using Image image = _relief.GetLayerData(6 * Variants + variant);
+        return ImageTexture.CreateFromImage(image);
+    }
 
     private static Texture2DArray LoadCatalog()
     {
@@ -38,6 +46,12 @@ internal sealed class MapArtwork : IDisposable
         biomes[(int)Mapmaker.Core.BiomeType.Swamp * 4] = 14;
         biomes[(int)Mapmaker.Core.BiomeType.Swamp * 4 + 2] = 6;
         biomes[(int)Mapmaker.Core.BiomeType.Swamp * 4 + 3] = 0;
+        for (int id = (int)Mapmaker.Core.BiomeType.Glacier; id <= (int)Mapmaker.Core.BiomeType.SaltFlat; id++) biomes[id * 4] = (byte)(id + 3);
+        var extraVegetation = new[] { (Mapmaker.Core.BiomeType.Oasis, 7), (Mapmaker.Core.BiomeType.Mangrove, 8),
+            (Mapmaker.Core.BiomeType.SeasonalForest, 9), (Mapmaker.Core.BiomeType.Shrubland, 10),
+            (Mapmaker.Core.BiomeType.TemperateRainforest, 0), (Mapmaker.Core.BiomeType.Bog, 5) };
+        foreach (var (biome, art) in extraVegetation)
+        { int i = (int)biome * 4 + 2; biomes[i] = (byte)art; biomes[i + 1] = 0; }
         var vegetation = new[] { Mapmaker.Core.BiomeType.TemperateForest, Mapmaker.Core.BiomeType.Rainforest,
             Mapmaker.Core.BiomeType.Taiga, Mapmaker.Core.BiomeType.Savanna, Mapmaker.Core.BiomeType.Desert };
         for (int art = 0; art < vegetation.Length; art++)

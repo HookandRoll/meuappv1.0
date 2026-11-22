@@ -477,7 +477,7 @@ public static partial class WorldGenerator
                 high = Math.Max(high, score);
             }
 
-            int target = (int)((long)_domain.PercentageAreaCount * _settings.LandPercent / 100);
+            int target = PlateLandTarget();
             Span<int> bins = stackalloc int[HistogramSize];
             // Refine the threshold bin once, without sorting or copying a world-sized field.
             for (int pass = 0; pass < 2 && high > low; pass++)

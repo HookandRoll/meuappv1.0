@@ -11,7 +11,8 @@ public enum WaterType : byte { None, Ocean, Lake, Wetland }
 public enum ReliefType : ushort { Flat, Rolling, Hills, Mountains, Peak }
 public enum BiomeType : ushort
 {
-    None, Beach, Grassland, TemperateForest, Rainforest, Savanna, Steppe, Desert, Taiga, Tundra, Alpine, Swamp
+    None, Beach, Grassland, TemperateForest, Rainforest, Savanna, Steppe, Desert, Taiga, Tundra, Alpine, Swamp,
+    Glacier, SeasonalForest, Shrubland, Badlands, TemperateRainforest, Mangrove, Bog, Oasis, Volcanic, SaltFlat
 }
 
 // Independent classifications: a forest can occupy a plateau with a canyon.
@@ -34,7 +35,8 @@ public enum GeographicFeatures : ulong
 public static class Biomes
 {
     public static bool IsForest(BiomeType type) =>
-        type is BiomeType.TemperateForest or BiomeType.Rainforest or BiomeType.Taiga or BiomeType.Swamp;
+        type is BiomeType.TemperateForest or BiomeType.Rainforest or BiomeType.Taiga or BiomeType.Swamp or
+            BiomeType.SeasonalForest or BiomeType.TemperateRainforest or BiomeType.Mangrove;
 }
 
 public sealed record GenerationSettings(
@@ -77,6 +79,9 @@ public sealed class WorldData
     public ushort[] LockMask { get; }
     public JsonElement SparseEntities { get; internal set; }
     public TectonicReference? Tectonics { get; internal set; }
+    public GeographicRegions? Geography { get; internal set; }
+    internal bool GeographyDirty { get; set; }
+    public void InvalidateGeography() => GeographyDirty = true;
     // The sea level is derived from the manifest and recalibrated on demand after opening a save.
     internal float GeneratedSeaLevel { get; set; } = float.NaN;
 
@@ -115,7 +120,7 @@ public sealed class WorldData
         if (string.IsNullOrWhiteSpace(manifest.WorldName) || manifest.WorldName.Length > 120 ||
             !double.IsFinite(manifest.HexDistance) || manifest.HexDistance <= 0 || manifest.DistanceUnit != "km")
             throw new ArgumentException("Nome ou escala do mundo inválido.");
-        if (manifest.Generation is not { Continents: >= 1 and <= 12, LandPercent: >= 10 and <= 65, CoastDetail: >= 0 and <= 100 } options
+        if (manifest.Generation is not { Continents: >= 1 and <= 12, LandPercent: >= 0 and <= 100, CoastDetail: >= 0 and <= 100 } options
             || !Enum.IsDefined(options.Algorithm) || !Enum.IsDefined(options.Stage) || !Enum.IsDefined(options.Extent))
             throw new ArgumentException("Configuração de geração inválida.");
         int polarRows = options.PolarOceanRows;
@@ -144,6 +149,7 @@ public sealed class WorldData
     internal WorldData CreateEditCopy()
     {
         var copy = new WorldData(Manifest) { SparseEntities = SparseEntities, Tectonics = Tectonics, GeneratedSeaLevel = GeneratedSeaLevel };
+        copy.Geography = Geography?.Copy(); copy.GeographyDirty = GeographyDirty;
         Elevation.CopyTo(copy.Elevation, 0);
         Water.CopyTo(copy.Water, 0);
         Relief.CopyTo(copy.Relief, 0);

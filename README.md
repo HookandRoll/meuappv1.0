@@ -1,10 +1,22 @@
 # Jota Fantasy Map Maker
 
-**Alpha 1.1.32** · Mapas de fantasia para RPG, com editor de terreno, tectônica, clima e rios no Godot 4 .NET.
+**Alpha 1.1.54** · Mapas de fantasia para RPG, com editor de terreno, tectônica, clima e rios no Godot 4 .NET.
 
-Executável portátil para Windows x64 e histórico de mudanças na [release Alpha 1.1.32](https://github.com/HookandRoll/meuappv1.0/releases/tag/v1.1.32-alpha). Veja [todas as mudanças desde a Alpha 1.1.31](RELEASE_NOTES.md).
+Em desenvolvimento nesta árvore: **gerador v54**, com a [integração dos 21 biomas](results/Biomas_Geleiras_Vulcoes_v46.md), [correções de formas e tectônica](results/Formas_Naturais_v47.md) e [geleiras sem recortes diagonais e vulcões destacados](results/Geleiras_Vulcoes_v48.md).
+
+Executável portátil para Windows x64 na [release Alpha 1.1.54](https://github.com/HookandRoll/meuappv1.0/releases/tag/v1.1.54-alpha). Veja [as mudanças desde a Alpha 1.1.32](RELEASE_NOTES_1.1.54.md).
 
 As artes atuais têm três variações por elemento, vegetação isométrica e relevo sobreposto. Veja o [walkthrough visual](docs/Art_Walkthrough_1.1.30.md) e os [créditos das artes](THIRD_PARTY_NOTICES.md).
+
+Os menus usam madeira desenhada e a fonte Faerie Moot. Na criação, terra e costa vão de 0 a 100%. Terra começa em 25% e avança de 5 em 5. Costa começa em 80% e avança de 10 em 10. A seed aparece no cabeçalho e é copiada ao clicar. [Detalhes e imagens](results/Menus_Sliders_v49.md).
+
+A camada **Regiões** identifica e nomeia continentes, arquipélagos, ilhas, oceanos, mares e lagos. Use **Mapa → Renomear região selecionada…** para personalizar um nome. [Regras, limites e persistência](results/Regioes_Geograficas_v50.md).
+
+A v52 preserva as ilhas naturais e acrescenta grupos pequenos de 3–9 hexes e ilhotas acompanhantes, com quantidade limitada e a mesma área terrestre. Corrige a fragmentação destrutiva da v51 e mantém o classificador de oceanos e mares da versão 2. [Correção, comparação e limites](results/Ilhas_Preservadas_v52.md).
+
+A v53 aumenta a diversidade dos arquipélagos no atlas: mais ilhas pequenas e ilhotas, arcos vulcânicos mais finos e microplacas continentais com tamanhos variados, mantendo algumas ilhas principais grandes. [Comparações e causa dos canais continentais](results/Arquipelagos_v53.md).
+
+A v54 dá preferência a placas continentais com centros mais afastados no atlas, abrindo mais espaço para bacias oceânicas. Quando as massas ainda se unem e faltam continentes, a geração pode abrir canais para separá-las.
 
 ## Abrir o protótipo
 
@@ -20,8 +32,8 @@ O VS Code pode abrir a pasta inteira. Também é possível compilar com `dotnet 
 - No formulário, escolha entre grade vazia, terra e água, relevo ou terreno completo com clima e biomas. Uma grade vazia pode ser preenchida depois em **Mapa → Gerar terreno**.
 - Em **Tipo de mapa**, escolha **Mundo — atlas completo** (padrão), com topo/base retos e laterais curvas, ou **Região — recorte aberto**, retangular. No Mundo, placas, continentes, ilhas, relevo, clima e rios são calculados em toda a área útil; não há um retângulo central com faixas copiadas ou continuação visual de terreno. A porcentagem de terra e mar usa os hexes úteis fora das placas polares, excluindo também os cantos fora do contorno. O número de continentes orienta a quantidade mínima de massas principais separadas por água. Arquivos antigos mantêm suas versões e sua geografia.
 - A barra de geração mostra a etapa em andamento e sua porcentagem. Os biomas usam clima e ruído em coordenadas globais, processados em chunks de 32 × 32 hexes. A camada **Terreno** suaviza as transições entre biomas terrestres. A faixa costeira usa a cor da terra vizinha e um contorno irregular sobre o oceano costeiro, que continua sendo inspecionado como água.
-- Mapas novos usam **Escultura continental (estilo Azgaar)**, com gerador v45: a distribuição de crosta das placas define terra e mar; colisões formam cordilheiras e arcos de ilhas, e afastamentos rebaixam o terreno. As costas recebem detalhes sobre essa base geológica. O número de continentes orienta as placas continentais e a separação das massas principais por água, com tamanhos diferentes. O percentual de terra é ajustado globalmente, sem cotas iguais por continente. Bacias fechadas viram lagos; relevo, latitude e transporte de umidade influenciam o clima e os biomas. Os algoritmos anteriores continuam suportados nos arquivos existentes.
-- No Mundo, as placas **Ártica** e **Antártica** são obrigatórias, adicionais às placas comuns e sempre oceânicas. Cobrem o topo e a base retos com fronteiras irregulares por seed e contatos de afastamento. A geração mantém essas faixas submersas. As duas placas ficam fora do total de placas comuns e dos cálculos de escala baseados nesse total; seu oceano fica fora da base da porcentagem de terra e mar. Massas de gelo ficam para uma etapa futura. Veja a [validação das placas polares](results/Placas_Polares_v38.md) e o [ajuste de contagem e porcentagem](results/Cotas_Polares_v39.md).
+- Mapas novos usam **Escultura continental (estilo Azgaar)**, com gerador v51: a distribuição de crosta das placas define terra e mar; colisões formam cordilheiras e arcos de ilhas, e afastamentos rebaixam o terreno. As costas recebem detalhes sobre essa base geológica. O número de continentes orienta as placas continentais e a separação das massas principais por água, com tamanhos diferentes. O percentual de terra é ajustado globalmente, sem cotas iguais por continente. Bacias fechadas viram lagos; relevo, latitude e transporte de umidade influenciam o clima e os biomas. Os algoritmos anteriores continuam suportados nos arquivos existentes.
+- No Mundo, as placas **Ártica** e **Antártica** são obrigatórias, adicionais às placas comuns e sempre oceânicas. Cobrem o topo e a base retos com fronteiras irregulares por seed e contatos de afastamento. No gerador v46, as faixas polares também recebem ilhas e continentes de gelo como exceção à reserva oceânica. As duas placas ficam fora do total de placas comuns e dos cálculos de escala baseados nesse total; toda a faixa polar, incluindo o gelo, fica fora da base da porcentagem de terra e mar. Geleiras automáticas ficam restritas aos polos. Veja a [validação das placas polares](results/Placas_Polares_v38.md) e o [ajuste de contagem e porcentagem](results/Cotas_Polares_v39.md).
 - As duas laterais curvas do Mundo têm faixas de pequenas placas oceânicas, com limites irregulares e terreno sempre submerso para afastar as costas do contorno. Esse oceano lateral entra na porcentagem de água; apenas os polos ficam fora. Veja a [verificação das margens e da porcentagem](results/Margens_Oceanicas_v40.md).
 - Use a roda do mouse para aproximar, arraste com o botão direito ou do meio para mover e clique para inspecionar um hex.
 - O controle **Ícones** na barra superior alterna a camada de flora, fauna e detalhes. Os símbolos aparecem ao aproximar o terreno e são distribuídos pela seed conforme o bioma, o relevo e a água.
@@ -62,7 +74,7 @@ O teste verifica o estado inicial, a seleção de hexes, as arestas compartilhad
 
 O núcleo em `src/Core` usa C# puro. `src/GodotApp` prepara as texturas e a interface, e o shader desenha terreno, relevo e vegetação com a arte de `tiles`, `relief` e `vegetation`. O `.world` é um ZIP versionado com a configuração de geração, os dados densos e as entidades esparsas. O arquivo é montado em um temporário antes de substituir o save anterior. A especificação na raiz lista os marcos seguintes.
 
-Para exportar o EXE portátil, instale os templates Windows .NET correspondentes ao Godot 4.7.2 e execute `godot --headless --path . --editor --export-release "Windows Desktop"`. O preset versionado gera `dist/Jota-Fantasy-Map-Maker-Alpha-1.1.32.exe`, com PCK e runtime incorporados.
+Para exportar o EXE portátil, instale os templates Windows .NET correspondentes ao Godot 4.7.2 e execute `godot --headless --path . --editor --export-release "Windows Desktop"`. O preset gera `dist/Jota-Fantasy-Map-Maker-Alpha-1.1.54.exe`, com PCK e runtime incorporados.
 
 ## Agradecimentos
 

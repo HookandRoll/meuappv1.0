@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Godot;
 using Mapmaker.Core;
 
@@ -20,7 +21,7 @@ public partial class MapView
                 var world = await System.Threading.Tasks.Task.Run(() => WorldGenerator.Create(manifest));
                 if (atlas)
                 {
-                    int land = System.Linq.Enumerable.Count(world.Water, w => w == WaterType.None);
+                    int land = Enumerable.Range(0, world.Count).Count(i => world.Water[i] == WaterType.None && world.Domain.CountsTowardLandQuota(i));
                     Require(land == (long)world.Domain.PercentageAreaCount * manifest.Generation.LandPercent / 100,
                         "O terreno deve respeitar o percentual fora dos polos.");
                     GD.Print($"ATLAS QUOTA: target={manifest.Generation.LandPercent}%, land={land}, nonpolar={world.Domain.PercentageAreaCount}, actual={100.0 * land / world.Domain.PercentageAreaCount:F4}%.");

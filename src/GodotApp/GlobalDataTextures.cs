@@ -144,6 +144,10 @@ internal sealed class GlobalDataTextures : IDisposable
         for (int cell = 0; cell < world.Count; cell++)
         {
             byte symbols = ReliefContours.Symbol(world, cell);
+            var features = world.Features[cell];
+            if (world.Water[cell] == WaterType.None && (features & GeographicFeatures.Volcano) != 0) symbols = MapRenderFormat.ReliefSymbol | MapRenderFormat.MassifSymbol | 1;
+            else if ((features & GeographicFeatures.Canyon) != 0 && StableRank(cell) % 3 == 0) symbols = MapRenderFormat.ReliefSymbol | MapRenderFormat.MassifSymbol | 2;
+            else if ((features & GeographicFeatures.BadlandRocks) != 0 && symbols == 0 && StableRank(cell) % 7 == 0) symbols = MapRenderFormat.ReliefSymbol | MapRenderFormat.MassifSymbol | 3;
             terrain[cell * 4 + 3] |= symbols;
             if ((symbols & MapRenderFormat.MassifSymbol) == 0) continue;
             ReliefType visual = ReliefContours.VisualRelief(world, cell);
@@ -177,6 +181,12 @@ internal sealed class GlobalDataTextures : IDisposable
                     (WaterType.None, BiomeType.Rainforest) => 0.88f,
                     (WaterType.None, BiomeType.Taiga) => 0.82f,
                     (WaterType.None, BiomeType.Swamp) => 0.80f,
+                    (WaterType.None, BiomeType.SeasonalForest) => 0.78f,
+                    (WaterType.None, BiomeType.TemperateRainforest) => 0.91f,
+                    (WaterType.None, BiomeType.Mangrove) => 0.78f,
+                    (WaterType.None, BiomeType.Oasis) => 0.55f,
+                    (WaterType.None, BiomeType.Shrubland) => 0.38f,
+                    (WaterType.None, BiomeType.Bog) => 0.24f,
                     (WaterType.None, BiomeType.Savanna) => 0.30f,
                     (WaterType.None, BiomeType.Desert) => 0.14f,
                     (WaterType.Wetland, _) => 0.46f,

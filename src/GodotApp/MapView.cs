@@ -7,7 +7,7 @@ namespace Mapmaker.GodotApp;
 public partial class MapView : Node2D
 {
     private static readonly string[] Layers =
-        { "Terreno", "Elevação", "Temperatura", "Chuva", "Biomas", "Locks", "Tectônica" };
+        { "Terreno", "Elevação", "Temperatura", "Chuva", "Biomas", "Locks", "Tectônica", "Regiões" };
     private static readonly Color Ink = new("#ebe2cc");
     private static readonly Color Muted = new("#a89b84");
     private Node2D _map = null!;
@@ -26,6 +26,8 @@ public partial class MapView : Node2D
     private int _layer;
     private TectonicOverlay _tectonicOverlay = null!;
     private RiverOverlay _riverOverlay = null!;
+    private VolcanoOverlay _volcanoOverlay = null!;
+    private bool _showVolcanoes = true;
     private double _statusTime;
 
     public override void _Ready()
@@ -39,15 +41,24 @@ public partial class MapView : Node2D
         _map.AddChild(_surface);
         _riverOverlay = new RiverOverlay();
         _map.AddChild(_riverOverlay);
+        _volcanoOverlay = new VolcanoOverlay();
+        _map.AddChild(_volcanoOverlay);
         _tectonicOverlay = new TectonicOverlay { Visible = false };
         _map.AddChild(_tectonicOverlay);
+        _regionLabels=new RegionLabels { Visible=false };_map.AddChild(_regionLabels);
         BuildInterface();
         GetViewport().SizeChanged += FitMap;
         GetTree().AutoAcceptQuit = false;
 
         string[] args = OS.GetCmdlineUserArgs();
         string? benchmarkSize = Array.Find(args, arg => arg.StartsWith("--benchmark-size="));
-        if (Array.IndexOf(args, "--ocean-frame-review") >= 0)
+        if (Array.IndexOf(args, "--shore-feather-review") >= 0)
+            Callable.From(RunShoreFeatherReview).CallDeferred();
+        else if (Array.IndexOf(args, "--regions-review") >= 0)
+            Callable.From(RunRegionReview).CallDeferred();
+        else if (Array.IndexOf(args, "--menu-review") >= 0)
+            Callable.From(RunMenuReview).CallDeferred();
+        else if (Array.IndexOf(args, "--ocean-frame-review") >= 0)
             Callable.From(RunOceanFrameReview).CallDeferred();
         else if (Array.IndexOf(args, "--river-clearance-review") >= 0)
             Callable.From(RunRiverClearanceReview).CallDeferred();
@@ -59,6 +70,8 @@ public partial class MapView : Node2D
             Callable.From(RunBoundaryReview).CallDeferred();
         else if (Array.IndexOf(args, "--biome-majority-review") >= 0)
             Callable.From(RunBiomeMajorityReview).CallDeferred();
+        else if (Array.IndexOf(args, "--expanded-biomes-review") >= 0)
+            Callable.From(RunExpandedBiomeReview).CallDeferred();
         else if (Array.IndexOf(args, "--verify-map-format") >= 0)
             Callable.From(VerifyMapFormatOnGpu).CallDeferred();
         else if (benchmarkSize is not null)
@@ -111,6 +124,7 @@ public partial class MapView : Node2D
         _editorPreview?.Dispose();
         _lockTexture?.Dispose();
         _textures?.Dispose();
+        _regionTexture?.Dispose();
         _artwork?.Dispose();
     }
 
@@ -210,6 +224,9 @@ public partial class MapView : Node2D
         SetEditorPanelVisible(false);
         ReleaseEditorPreview();
         _world = world;
+        _regionLabels.World=world;
+        _layerSelect.SetItemDisabled(7,stage==GenerationStage.Blank);
+        if(_layer==7)RefreshRegions();
         _tectonicOverlay.Reference = world.Tectonics;
         _tectonicOverlay.SymbolSize = Math.Max(2, world.Height / 80f);
         _tectonicOverlay.MapHeight = world.Height * 1.5f;
@@ -234,6 +251,7 @@ public partial class MapView : Node2D
         _riverOverlay.Invalidate();
         _riverOverlay.World = world;
         _riverOverlay.QueueRedraw();
+        _volcanoOverlay.SetWorld(world, _artwork);
         GlobalDataTextures? previous = _textures;
         _textures = buffers.HasValue ? new GlobalDataTextures(world, buffers.Value) : null;
         _material.SetShaderParameter("terrain_data", _textures is null ? default : Variant.From(_textures.Terrain));
@@ -268,8 +286,13 @@ public partial class MapView : Node2D
         UpdateArtworkZoom();
     }
 
-    private void UpdateArtworkZoom() =>
-        _material.SetShaderParameter("detail_zoom", Mathf.SmoothStep(12f, 22f, _map.Scale.X));
+    private void UpdateArtworkZoom()
+    {
+        float detail = Mathf.SmoothStep(12f, 22f, _map.Scale.X);
+        _material.SetShaderParameter("detail_zoom", detail);
+        _volcanoOverlay.SetZoom(detail);
+        _regionLabels.Zoom=_map.Scale.X;_regionLabels.QueueRedraw();
+    }
 
     private void RefreshInspection()
     {
@@ -305,6 +328,11 @@ public partial class MapView : Node2D
         if (stage >= GenerationStage.Relief)
             label += $"  ·  {ReliefLabel(world.Relief[i])}  ·  {world.Elevation[i]} m";
         label += GeographyDescription(world, i);
+        if(stage!=GenerationStage.Blank && (!world.GeographyDirty || _layer==7))
+        {
+            var named=GeographicRegions.Get(world).At(i);
+            if(named is not null) label+=$"  ·  {named.Name} ({GeographicRegions.Category(named.Kind)}, {named.AreaKm2:N0} km²)";
+        }
         if (stage >= GenerationStage.Terrain)
             label += $"  ·  {BiomeLabel(world.Biomes[i])}  ·  {world.Temperature[i] * 0.1:F1} °C  ·  {world.Rainfall[i]} mm/ano";
         label += $"  ·  Locks: {MapEditorPanel.LockLabel((HexLocks)world.LockMask[i])}";
@@ -315,6 +343,10 @@ public partial class MapView : Node2D
         }
         _inspection.Text = label;
         _inspection.TooltipText = label;
+        var namedRegion=world.GeographyDirty ? null : world.Geography?.At(i);
+        if(namedRegion is not null)
+            _inspection.TooltipText+=$"\nRegião #{namedRegion.Id} · {namedRegion.Cells:N0} hexes · Elevação média {namedRegion.MeanElevation:F0} m"+
+                (namedRegion.Plate>=0 ? $" · Placa-base {namedRegion.Plate+1}" : "");
     }
 
     private static bool IsCoastalOcean(WorldData world, Hex hex)
@@ -339,7 +371,12 @@ public partial class MapView : Node2D
         BiomeType.Beach => "Praia", BiomeType.Grassland => "Campo",
         BiomeType.TemperateForest => "Floresta temperada", BiomeType.Rainforest => "Floresta tropical",
         BiomeType.Savanna => "Savana", BiomeType.Steppe => "Estepe", BiomeType.Desert => "Deserto",
-        BiomeType.Taiga => "Taiga", BiomeType.Tundra => "Tundra", BiomeType.Alpine => "Alpino", BiomeType.Swamp => "Pântano arborizado", BiomeType.None => "Sem bioma terrestre", _ => $"Bioma #{(ushort)biome}"
+        BiomeType.Taiga => "Taiga", BiomeType.Tundra => "Tundra", BiomeType.Alpine => "Alpino", BiomeType.Swamp => "Pântano arborizado",
+        BiomeType.Glacier => "Geleira polar", BiomeType.SeasonalForest => "Floresta tropical sazonal",
+        BiomeType.Shrubland => "Arbustal / chaparral", BiomeType.Badlands => "Badlands / deserto rochoso",
+        BiomeType.TemperateRainforest => "Floresta temperada chuvosa", BiomeType.Mangrove => "Manguezal",
+        BiomeType.Bog => "Turfeira fria", BiomeType.Oasis => "Oásis / mata ciliar", BiomeType.Volcanic => "Terras vulcânicas", BiomeType.SaltFlat => "Salar",
+        BiomeType.None => "Sem bioma terrestre", _ => $"Bioma #{(ushort)biome}"
     };
 
     internal static string LandformLabel(LandformType landform) => landform switch
@@ -368,9 +405,13 @@ public partial class MapView : Node2D
     private void SetLayer(int index)
     {
         _layer = index;
+        _layerSelect.Select(index);
+        _regionLabels.Visible=index==7;
+        if(index==7)RefreshRegions();
         _material.SetShaderParameter("layer", index == 6 ? 0 : index);
         _tectonicOverlay.Visible = index == 6;
         _riverOverlay.Visible = index == 0 || index == 6;
+        _volcanoOverlay.Visible = _showVolcanoes && (index == 0 || index == 6);
         if (!_busy)
             RefreshEditorClimate();
     }
@@ -392,16 +433,7 @@ public partial class MapView : Node2D
         return row;
     }
 
-    private static StyleBoxFlat BarStyle(float horizontal, float vertical) => new()
-    {
-        BgColor = new Color("#1c1712"),
-        BorderColor = new Color("#5e4c36"),
-        BorderWidthTop = 1, BorderWidthBottom = 1, BorderWidthLeft = 1, BorderWidthRight = 1,
-        CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6,
-        CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6,
-        ContentMarginLeft = horizontal, ContentMarginRight = horizontal,
-        ContentMarginTop = vertical, ContentMarginBottom = vertical
-    };
+    private static StyleBoxTexture BarStyle(float horizontal, float vertical) => MenuTheme.Wood(horizontal, vertical);
 
     private static Label AddLabel(Control parent, string text, int size, Color color)
     {

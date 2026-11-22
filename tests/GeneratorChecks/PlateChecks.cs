@@ -18,9 +18,9 @@ public static partial class WorldGenerator
             new PlateReference(width * 0.85f, height * 0.5f, -1, 0, false));
         PlateContact Contact(float compression) => new(width * 0.66f, height * 0.1f, width * 0.66f, height * 0.9f,
             compression, 0, 1, 2);
-        (WorldData World, float[] Ridges) Build(ImmutableArray<PlateReference> plates, float? compression)
+        (WorldData World, float[] Ridges) Build(ImmutableArray<PlateReference> plates, float? compression, float shear = 0)
         {
-            var reference = new TectonicReference(plates, compression is float c ? ImmutableArray.Create(Contact(c)) : ImmutableArray<PlateContact>.Empty);
+            var reference = new TectonicReference(plates, compression is float c ? ImmutableArray.Create(Contact(c) with { Shear = shear }) : ImmutableArray<PlateContact>.Empty);
             var world = new WorldData(m) { Tectonics = reference };
             Generate(world, new GenerationArea(world, new(0, 0, m.Width, m.Height), useWorldArrays: true), null);
             var surface = new ContinentalSculpture(m, reference).Build(null);
@@ -30,6 +30,10 @@ public static partial class WorldGenerator
         }
         var oceanCollision = Build(oceanPlates, 1.5f);
         var oceanPassive = Build(oceanPlates, null);
+        if (m.GeneratorVersion >= 47 && oceanCollision.Ridges.Any(r => r < -0.00001f))
+            throw new Exception("Convergent contact excavated a trench.");
+        if (m.GeneratorVersion >= 47 && Build(oceanPlates, 0, 1.5f).Ridges.Any(r => r < -0.00001f))
+            throw new Exception("Transform contact excavated a trench.");
         int ArcLand(WorldData world) => Enumerable.Range(0, world.Count).Count(i =>
             i % world.Width > world.Width * 0.54f && i % world.Width < world.Width * 0.71f &&
             i / world.Width > world.Height * 0.1f && i / world.Width < world.Height * 0.9f && world.Water[i] == WaterType.None);
@@ -67,6 +71,8 @@ public static partial class WorldGenerator
         var continentalPlates = oceanPlates.Select((p, i) => p with { Continental = i != 0 }).ToImmutableArray();
         var collision = Build(continentalPlates, 1.5f);
         var extension = Build(continentalPlates, -1.5f);
+        if (m.GeneratorVersion >= 47 && !extension.Ridges.Any(r => r < -0.25f))
+            throw new Exception("Divergent contact stopped excavating its rift.");
         int[] core = Enumerable.Range(0, m.Width * m.Height).Where(i => Math.Abs(i % m.Width - m.Width * 0.66f) < 2 &&
             i / m.Width > m.Height * 0.2f && i / m.Width < m.Height * 0.8f).ToArray();
         double collisionHeight = core.Average(i => (double)collision.World.Elevation[i]);

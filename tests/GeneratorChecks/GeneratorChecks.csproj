@@ -20,6 +20,10 @@
     <Compile Include="ClimateHeightChecks.cs" />
     <Compile Include="SwampChecks.cs" />
     <Compile Include="BiomeMajorityChecks.cs" />
+    <Compile Include="ExpandedBiomeChecks.cs" />
+    <Compile Include="GeographicRegionChecks.cs" />
+    <Compile Include="OceanIslandChecks.cs" />
+    <Compile Include="AtlasArchipelagoChecks.cs" />
   </ItemGroup>
 </Project>
 

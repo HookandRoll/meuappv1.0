@@ -191,6 +191,14 @@ public sealed record TectonicReference(ImmutableArray<PlateReference> Plates, Im
             float size = varied ? (i < majorCount ? 1.15f + random.NextSingle() * 0.65f : 0.24f + random.NextSingle() * 0.22f) : 1f;
             if (m.GeneratorVersion >= 33 && i < majorCount) size = 1.05f + random.NextSingle() * 1.6f;
             if (varied && i < majorCount) continental = (i & 1) == 0;
+            if (m.GeneratorVersion >= 53 && domain.IsAtlas && i >= majorCount && continental)
+            {
+                // A minority of continental microplates retain broad island
+                // shelves; most form smaller island nuclei in a world atlas.
+                uint islandHash = unchecked((uint)m.Seed ^ (uint)i * 0x9E3779B9u);
+                islandHash = unchecked((islandHash ^ (islandHash >> 16)) * 0x7FEB352Du);
+                if (islandHash % 4 != 0) size = Math.Max(0.15f, size * 0.55f);
+            }
             plates[i] = new(best.X, best.Y, velocity.X, velocity.Y, continental, size);
         }
         if (m.GeneratorVersion >= 33)
@@ -198,7 +206,29 @@ public sealed record TectonicReference(ImmutableArray<PlateReference> Plates, Im
             var order = Enumerable.Range(0, majorCount).ToArray();
             var crustRandom = new Random(m.Seed ^ 0x37A9C51);
             crustRandom.Shuffle(order);
-            var continental = order.Take(m.Generation.Continents).ToHashSet();
+            var continental = new HashSet<int>();
+            if (m.GeneratorVersion >= 54 && domain.IsAtlas)
+            {
+                // Start with a seeded plate, then leave room for oceanic crust
+                // between continental centers, especially around large plates.
+                while (continental.Count < m.Generation.Continents)
+                {
+                    float Rank(int candidate)
+                    {
+                        var a = plates[candidate];
+                        float nearest = continental.Min(other =>
+                        {
+                            var b = plates[other];
+                            return Delta(new(a.X, a.Y), new(b.X, b.Y)).Length() / (1 + 0.15f * (a.Size + b.Size));
+                        });
+                        return nearest;
+                    }
+                    int next = continental.Count == 0 ? order[0] : order.Where(i => !continental.Contains(i))
+                        .OrderByDescending(Rank).First();
+                    continental.Add(next);
+                }
+            }
+            else continental.UnionWith(order.Take(m.Generation.Continents));
             for (int i = 0; i < majorCount; i++)
                 plates[i] = plates[i] with { Continental = continental.Contains(i) };
         }

@@ -18,6 +18,7 @@ public static partial class WorldGenerator
         public int WorldHeight { get; }
         public int WorldWidth => _worldWidth;
         public bool Wrap => _wrap;
+        public bool IsInitialGeneration => _selection is null;
         public bool Locked(int cell, HexLocks field) => ((HexLocks)_locks[cell] & field) != 0;
         public WorldRegion Bounds => _bounds;
         public int Count => _bounds.Width * _bounds.Height;
@@ -26,6 +27,7 @@ public static partial class WorldGenerator
         public WaterType[] Water { get; }
         public ReliefType[] Relief { get; }
         public LandformType[] Landforms { get; }
+        public GeographicFeatures[] Features { get; }
         public BiomeType[] Biomes { get; }
         public short[] Temperature { get; }
         public ushort[] Rainfall { get; }
@@ -47,6 +49,7 @@ public static partial class WorldGenerator
             Water = useWorldArrays ? world.Water : new WaterType[Count];
             Relief = useWorldArrays ? world.Relief : new ReliefType[Count];
             Landforms = useWorldArrays ? world.Landforms : new LandformType[Count];
+            Features = useWorldArrays ? world.Features : new GeographicFeatures[Count];
             Biomes = useWorldArrays ? world.Biomes : new BiomeType[Count];
             Temperature = useWorldArrays ? world.Temperature : new short[Count];
             Rainfall = useWorldArrays ? world.Rainfall : new ushort[Count];
@@ -100,6 +103,9 @@ public static partial class WorldGenerator
                     for (int offset = 0; offset < region.Width; offset++)
                         if (Writes(region.Column + offset, row, destination + offset, HexLocks.Landform))
                             world.Landforms[destination + offset] = Landforms[source + offset];
+                    for (int offset = 0; offset < region.Width; offset++)
+                        if (Writes(region.Column + offset, row, destination + offset, HexLocks.Features))
+                            world.Features[destination + offset] = Features[source + offset];
                 }
                 if (stage == GenerationStage.Terrain)
                 {

@@ -12,7 +12,8 @@ internal static class MapDetailIcons
     {
         None, Grama, Arbusto, Tronco, PlantaRolante, Cogumelos, Flores, VitoriaRegia, Coqueiro, Samambaia,
         ArvoreSeca, PedraGrama, PedraNeve, Caverna, FonteTermal, Ossada, Conchas, Recife,
-        Tatu, Escorpiao, Lobo, Veado, Urso, Harpia, Cabra, Jacare, Caranguejo, Peixe, Baleia
+        Tatu, Escorpiao, Lobo, Veado, Urso, Harpia, Cabra, Jacare, Caranguejo, Peixe, Baleia,
+        Vulcao, RochaBadlands, Escarpa, Canion, Oasis
     }
 
     // Texture layers follow the one-based icon IDs stored in the map texture.
@@ -22,7 +23,7 @@ internal static class MapDetailIcons
         "vitoria_regia", "coqueiro", "samambaia", "arvore_seca", "pedra_com_grama", "pedra_com_neve",
         "caverna", "fonte_termal", "ossada", "conchas", "recife_de_corais", "tatu", "escorpiao",
         "lobo", "veado", "urso", "harpia", "cabra_da_montanha", "jacare", "caranguejo",
-        "peixe_pulando", "cauda_de_baleia"
+        "peixe_pulando", "cauda_de_baleia", "vulcao", "rocha_badlands", "escarpa", "canion", "oasis"
     };
 
     internal static uint[] Build(WorldData world, byte[] terrain)
@@ -125,6 +126,10 @@ internal static class MapDetailIcons
         }
 
         BiomeType biome = world.Biomes[cell];
+        if (biome == BiomeType.Glacier) return [Icon.PedraNeve, Icon.PedraNeve];
+        if ((world.Features[cell] & GeographicFeatures.Volcano) != 0) return [Icon.Vulcao, Icon.FonteTermal];
+        if ((world.Features[cell] & GeographicFeatures.Canyon) != 0) return [Icon.Canion, Icon.PedraGrama];
+        if (world.Landforms[cell] == LandformType.Escarpment) return [Icon.Escarpa, Icon.PedraGrama];
         if (biome == BiomeType.Beach)
             return temperature >= 165
                 ? [Icon.Conchas, Icon.Caranguejo, Icon.Coqueiro] : [Icon.Conchas, Icon.Caranguejo, Icon.PedraGrama];
@@ -141,6 +146,15 @@ internal static class MapDetailIcons
             BiomeType.Rainforest => [Icon.Samambaia, Icon.Tronco, Icon.Arbusto, Icon.Samambaia, Icon.Harpia, Icon.Tatu],
             BiomeType.Taiga => [Icon.Tronco, Icon.Cogumelos, Icon.PedraNeve, Icon.Arbusto, Icon.Lobo, Icon.Urso],
             BiomeType.Swamp => [Icon.Tronco, Icon.Cogumelos, Icon.Samambaia, Icon.Arbusto, Icon.Samambaia],
+            BiomeType.SeasonalForest => [Icon.Tronco, Icon.Samambaia, Icon.Arbusto, Icon.Tatu, Icon.Veado],
+            BiomeType.TemperateRainforest => [Icon.Cogumelos, Icon.Samambaia, Icon.Tronco, Icon.Urso],
+            BiomeType.Mangrove => [Icon.Caranguejo, Icon.Tronco, Icon.Jacare, Icon.VitoriaRegia],
+            BiomeType.Bog => [Icon.Arbusto, Icon.ArvoreSeca, Icon.PedraNeve, Icon.Tronco],
+            BiomeType.Oasis => [Icon.Oasis, Icon.Coqueiro, Icon.Arbusto],
+            BiomeType.Badlands => [Icon.RochaBadlands, Icon.Ossada, Icon.Escorpiao],
+            BiomeType.Shrubland => [Icon.RochaBadlands, Icon.Arbusto, Icon.Grama],
+            BiomeType.Volcanic => [Icon.FonteTermal, Icon.PedraGrama, Icon.Ossada],
+            BiomeType.SaltFlat => [Icon.Ossada, Icon.PedraGrama],
             BiomeType.Tundra or BiomeType.Alpine => [Icon.PedraNeve, Icon.PedraNeve, Icon.Arbusto, Icon.ArvoreSeca, Icon.Lobo],
             BiomeType.Desert => [Icon.PlantaRolante, Icon.Ossada, Icon.ArvoreSeca, Icon.PlantaRolante, Icon.Escorpiao],
             BiomeType.Steppe => [Icon.Grama, Icon.PedraGrama, Icon.ArvoreSeca, Icon.PlantaRolante, Icon.Ossada],

@@ -17,7 +17,7 @@ public static partial class WorldGenerator
         var queue = new int[limit + 1];
         int width = area.Chunks.Width;
         bool Eligible(int i) => area.Water[i] == WaterType.None &&
-            source[i] is not (BiomeType.None or BiomeType.Beach or BiomeType.Alpine);
+            !ProtectedHabitat(source[i]);
         Hex HexAt(int i) => area.WorldHex(i % width, i / width);
 
         for (int start = 0; start < area.Count; start++)
@@ -98,6 +98,10 @@ public static partial class WorldGenerator
         BiomeType.Savanna => temperature >= 195 && rainfall is >= 380 and < 1200,
         BiomeType.TemperateForest => temperature is > 15 and < 255 && rainfall >= 850,
         BiomeType.Grassland => temperature is > 15 and < 255 && rainfall is >= 380 and < 1150,
+        BiomeType.SeasonalForest => temperature >= 180 && rainfall >= 950,
+        BiomeType.TemperateRainforest => temperature is > 25 and < 245 && rainfall >= 1650,
+        BiomeType.Shrubland => temperature is >= 100 and < 245 && rainfall is >= 300 and < 780,
+        BiomeType.Badlands => temperature > -55 && rainfall < 380,
         _ => false
     };
 }

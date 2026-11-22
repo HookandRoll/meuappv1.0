@@ -10,10 +10,11 @@ public sealed class MapDomain
     public int Width { get; }
     public int Height { get; }
     public int ActiveCount { get; }
-    // Polar water remains real map area, but is outside the v39 land/sea quota.
+    // The polar band (including v46 ice-covered land) is outside the land/sea quota.
     public int PercentageAreaCount { get; }
     private readonly int[]? _left;
     private readonly int[]? _right;
+    private readonly PolarPlateBands? _quotaBands;
 
     public MapDomain(WorldManifest m)
     {
@@ -34,7 +35,7 @@ public sealed class MapDomain
         ActiveCount = count;
         if (m.GeneratorVersion >= 39)
         {
-            var bands = new PolarPlateBands(m);
+            var bands = _quotaBands = new PolarPlateBands(m);
             for (int row = 0; row < Height; row++)
             for (int col = _left[row]; col < _right[row]; col++)
                 if (bands.KindAt(HexGrid.Center(HexGrid.FromOffset(col, row))) != PlateKind.Normal) count--;
@@ -45,6 +46,8 @@ public sealed class MapDomain
     public bool Contains(int col, int row) => (uint)row < Height && (uint)col < Width &&
         (!IsAtlas || (col >= _left![row] && col < _right![row]));
     public bool Contains(int cell) => (uint)cell < Width * Height && Contains(cell % Width, cell / Width);
+    public bool CountsTowardLandQuota(int cell) => Contains(cell) && (_quotaBands is null ||
+        _quotaBands.KindAt(HexGrid.Center(HexGrid.FromOffset(cell % Width, cell / Width))) == PlateKind.Normal);
     public Vector2 Normalize(Vector2 p) => new((p.X / HexGrid.Root3 + 0.5f) / Width * 2 - 1,
         (p.Y / 1.5f + 0.5f) / Height * 2 - 1);
     public bool ContainsPoint(Vector2 p)

@@ -9,7 +9,7 @@ public readonly record struct GenerationProgress(GenerationStep Step, int Percen
 
 public static partial class WorldGenerator
 {
-    public const int Version = 45;
+    public const int Version = 54;
     internal const short SculptedStraitDepth = -137;
     private const int HistogramSize = 2048;
     // Two forest growth passes read up to two hexes away each. Cleanup reads one more.
@@ -42,7 +42,7 @@ public static partial class WorldGenerator
         HexLocks field = HexLocks.None, Action<GenerationProgress>? progress = null)
     {
         HexLocks fields = HexLocks.Water | HexLocks.Elevation | HexLocks.Relief |
-            HexLocks.Temperature | HexLocks.Rainfall | HexLocks.Biome | HexLocks.Rivers | HexLocks.Landform;
+            HexLocks.Temperature | HexLocks.Rainfall | HexLocks.Biome | HexLocks.Rivers | HexLocks.Landform | HexLocks.Features;
         if (!Enum.IsDefined(mode) || (field & ~fields) != 0 || (field != 0 && ((int)field & ((int)field - 1)) != 0))
             throw new ArgumentException("Modo ou campo de regeneração inválido.");
         if (field != HexLocks.None)
@@ -50,6 +50,7 @@ public static partial class WorldGenerator
         else
         {
             if (world.Manifest.GeneratorVersion < 41) fields &= ~HexLocks.Landform;
+            if (world.Manifest.GeneratorVersion < 46) fields &= ~HexLocks.Features;
             if (mode >= RegenerationMode.KeepWater)
                 fields &= ~HexLocks.Water;
             if (mode == RegenerationMode.KeepWaterAndElevation)
@@ -61,11 +62,14 @@ public static partial class WorldGenerator
             return;
         }
         RegenerateRegion(world, region, fields, progress);
+        world.GeographyDirty = true;
         if ((fields & HexLocks.Rivers) != 0 && world.Manifest.GeneratorVersion >= 18 &&
             world.Manifest.Generation.Stage == GenerationStage.Terrain && world.Manifest.Generation.Algorithm == TerrainAlgorithm.ContinentalSculpt)
             RegenerateRivers(world, region);
         if ((fields & HexLocks.Biome) != 0 && world.Manifest.GeneratorVersion >= 18)
-            ApplyFluvialBiomes(world, region);
+            ApplyFluvialBiomes(world, region, (fields & HexLocks.Features) != 0);
+        else if ((fields & HexLocks.Features) != 0 && world.Manifest.GeneratorVersion >= 46)
+            ApplyContextBiomes(world, region, updateFeatures: true, updateBiomes: false);
     }
 
     private static void RegenerateRegion(WorldData world, WorldRegion region, HexLocks fields,
@@ -203,6 +207,29 @@ public static partial class WorldGenerator
                 }, manifest.GeneratorVersion >= 33 && sculpt ? ridges : null) : null;
         if (manifest.GeneratorVersion >= 43 && sculpt && gentleElevation is not null && ridges is not null)
             CalibrateTectonicSummits(gentleElevation, ridges, world.Domain, seed);
+        var polarIce = PolarIceField.Enabled(manifest) ? new PolarIceField(manifest) : null;
+        if (polarIce is not null && gentleElevation is not null && water is not null)
+            for (int i = 0; i < world.Count; i++) if (water[i] == WaterType.None && polarIce.IsPolar(i)) gentleElevation[i] = polarIce.Elevation(i);
+        if (manifest.GeneratorVersion >= 46 && gentleElevation is not null && water is not null && ridges is not null)
+            for (int i = 0; i < world.Count; i++)
+                if (water[i] == WaterType.None && ridges[i] < -0.3f && !(polarIce?.IsPolar(i) ?? false))
+                    gentleElevation[i] = Math.Min(gentleElevation[i], (short)450);
+        byte[]? volcanoes = null;
+        if (manifest.GeneratorVersion >= 46 && gentleElevation is not null && water is not null)
+        {
+            var featureHeights = gentleElevation; var featureWater = water;
+            if (!area.IsInitialGeneration)
+            {
+                featureHeights = (short[])gentleElevation.Clone(); featureWater = (WaterType[])water.Clone();
+                for (int i = 0; i < world.Count; i++)
+                {
+                    int x = i % world.Width, y = i / world.Width;
+                    if (!area.Writes(x, y, i, HexLocks.Elevation)) featureHeights[i] = world.Elevation[i];
+                    if (!area.Writes(x, y, i, HexLocks.Water)) featureWater[i] = world.Water[i];
+                }
+            }
+            volcanoes = BuildVolcanoes(manifest, featureHeights, featureWater, world.Domain);
+        }
         progress?.Invoke(new(GenerationStep.Elevation, 0));
         VisitChunks(area.Chunks, (i, col, row) =>
         {
@@ -228,7 +255,11 @@ public static partial class WorldGenerator
             if (gentleElevation is not null) elevation = gentleElevation[cell];
             if (manifest.GeneratorVersion >= 33 && sculpt && area.Water[i] == WaterType.None && (ridges?[cell] ?? 0) < -0.3f)
                 elevation = (short)Math.Min(elevation, (short)450);
+            if (polarIce is not null && area.Water[i] == WaterType.None && polarIce.IsPolar(cell)) elevation = polarIce.Elevation(cell);
             area.Elevation[i] = area.Writes(col, row, cell, HexLocks.Elevation) ? elevation : world.Elevation[cell];
+            area.Features[i] = world.Features[cell];
+            if (volcanoes is not null && area.Writes(col, row, cell, HexLocks.Features))
+                area.Features[i] = (area.Features[i] & ~GeographicFeatures.Volcano) | (volcanoes[cell] == 2 && area.Water[i] == WaterType.None && area.Elevation[i] > 2000 ? GeographicFeatures.Volcano : 0);
             area.Relief[i] = !area.Writes(col, row, cell, HexLocks.Relief) ? world.Relief[cell] : area.Elevation[i] switch
             {
                 >= 3200 => ReliefType.Peak, >= 1850 => ReliefType.Mountains,
@@ -368,18 +399,28 @@ public static partial class WorldGenerator
                 float variation = Noise(x, y, seed ^ 0xB82F1E49u) + 0.35f * Noise(x * 2.1f, y * 2.1f, seed ^ 0x6DD15B57u) - 0.675f;
                 rainfall = (ushort)Math.Max(0, rainfall + (int)(variation * 220f));
             }
-            area.Biomes[i] = ChooseBiome(elevation, temperature, rainfall, forests: !openPlains[i]);
+            area.Biomes[i] = manifest.GeneratorVersion >= 46
+                ? ChooseExpandedBiome(area.Elevation[i], temperature, rainfall, area.WorldColumn(col), area.WorldRow(row), world.Width, world.Height, manifest.HorizontalWrap, seed, !openPlains[i])
+                : ChooseBiome(elevation, temperature, rainfall, forests: !openPlains[i]);
         }, progress, GenerationStep.Biomes, 0, beachCandidates is null ? 65 : 59);
         if (beachCandidates is not null)
             ApplyBeachMinimum(area, beachCandidates, progress);
         bool finishRibbons = FinishesBiomeRibbons(manifest);
-        RefineLandBiomes(area, openPlains, progress, finishRibbons ? 97 : 100);
+        RefineLandBiomes(area, openPlains, progress, finishRibbons ? 97 : 100, manifest.GeneratorVersion, seed);
         if (finishRibbons)
             FinishBiomeRibbons(area, openPlains, manifest.GeneratorVersion >= 31 ? null : progress);
-        if (manifest.GeneratorVersion >= 44) RoughenBiomeBorders(area, seed);
+        if (manifest.GeneratorVersion >= 44) RoughenBiomeBorders(area, seed, manifest.GeneratorVersion);
         if (manifest.GeneratorVersion >= 45) PropagateBiomeMajority(area, openPlains);
         if (manifest.GeneratorVersion >= 31)
             ConsolidateSmallBiomes(area, openPlains, progress);
+        if (manifest.GeneratorVersion >= 46)
+            VisitChunks(area.Chunks, (i, col, row) =>
+            {
+                int x = area.WorldColumn(col), y = area.WorldRow(row), cell = y * world.Width + x;
+                if (area.Water[i] != WaterType.None) return;
+                if (polarIce is not null && polarIce.IsPolar(cell)) area.Biomes[i] = BiomeType.Glacier;
+                else if (volcanoes is not null && volcanoes[cell] != 0) area.Biomes[i] = BiomeType.Volcanic;
+            }, null, GenerationStep.Biomes, 0, 100);
     }
 
     private static bool RefinesBiomeEdges(WorldManifest manifest) =>
@@ -531,21 +572,23 @@ public static partial class WorldGenerator
     };
 
 
-    private static void RefineLandBiomes(GenerationArea area, bool[] openPlains, Action<GenerationProgress>? progress, int end)
+    private static void RefineLandBiomes(GenerationArea area, bool[] openPlains, Action<GenerationProgress>? progress, int end, int version = 0, uint seed = 0)
     {
         var grown = new BiomeType[area.Count];
-        GrowForest(area, openPlains, area.Biomes, grown, progress, 65, 79);
-        GrowForest(area, openPlains, grown, area.Biomes, progress, 79, 93);
+        GrowForest(area, openPlains, area.Biomes, grown, progress, 65, 79, version, seed);
+        GrowForest(area, openPlains, grown, area.Biomes, progress, 79, 93, version, seed);
         Array.Copy(area.Biomes, grown, area.Count);
         VisitChunks(area.Chunks, (i, col, row) =>
         {
             if (Biomes.IsForest(grown[i]) && ForestNeighbors(area, grown, area.WorldHex(col, row)) == 0)
-                area.Biomes[i] = ChooseBiome(area.Elevation[i], area.Temperature[i], area.Rainfall[i], forests: false);
+                area.Biomes[i] = version >= 46 ? ChooseExpandedBiome(area.Elevation[i], area.Temperature[i], area.Rainfall[i],
+                    area.WorldColumn(col), area.WorldRow(row), area.WorldWidth, area.WorldHeight, area.Wrap, seed, false)
+                    : ChooseBiome(area.Elevation[i], area.Temperature[i], area.Rainfall[i], forests: false);
         }, progress, GenerationStep.Biomes, 93, end);
     }
 
     private static void GrowForest(GenerationArea area, bool[] openPlains, BiomeType[] source, BiomeType[] target,
-        Action<GenerationProgress>? progress, int from, int to)
+        Action<GenerationProgress>? progress, int from, int to, int version = 0, uint seed = 0)
     {
         VisitChunks(area.Chunks, (i, col, row) =>
         {
@@ -563,7 +606,9 @@ public static partial class WorldGenerator
                 !BridgesForestGap(area, openPlains, source, hex, mask))
                 return;
 
-            target[i] = temperature <= 45 ? BiomeType.Taiga
+            target[i] = version >= 46 ? ChooseExpandedBiome(area.Elevation[i], temperature, rain,
+                area.WorldColumn(col), area.WorldRow(row), area.WorldWidth, area.WorldHeight, area.Wrap, seed)
+                : temperature <= 45 ? BiomeType.Taiga
                 : temperature >= 225 && rain >= 1360 ? BiomeType.Rainforest : BiomeType.TemperateForest;
         }, progress, GenerationStep.Biomes, from, to);
     }

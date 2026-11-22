@@ -71,6 +71,8 @@ public static partial class WorldGenerator
                 float belt = Math.Max(HexGrid.Root3 * 1.7f, spacing * 0.055f * micro);
                 float arcOffset = Math.Max(HexGrid.Root3 * 2.2f, spacing * 0.055f);
                 float arcWidth = Math.Max(HexGrid.Root3 * 1.2f, spacing * 0.026f * micro);
+                bool atlasArc = _manifest.GeneratorVersion >= 53 && _domain.IsAtlas && !continentalCollision;
+                if (atlasArc) arcWidth = Math.Min(arcWidth, HexGrid.Root3 * 2.4f);
                 float reach = Math.Max(belt * 2.8f, arcOffset + arcWidth * 2.8f);
                 int top = Math.Max(0, (int)MathF.Floor((Math.Min(a.Y, b.Y) - reach) / 1.5f));
                 int bottom = Math.Min(_height - 1, (int)MathF.Ceiling((Math.Max(a.Y, b.Y) + reach) / 1.5f));
@@ -116,12 +118,15 @@ public static partial class WorldGenerator
                                 // into islands by a seeded along-boundary signal.
                                 float endFade = Band(MathF.Sqrt(Math.Max(0, delta.LengthSquared() - signed * signed)), arcWidth * 1.6f);
                                 float pulse = Smooth(Math.Clamp((FieldNoise(col, row, 19f, _seed ^ 0xC7159A43u) - 0.40f) / 0.40f, 0, 1));
+                                if (atlasArc) pulse = AtlasIslandConstruction(col, row, pulse);
                                 float arc = Band(signed - arcOffset, arcWidth) * endFade;
                                 // Volcanic construction can expose parts of an arc even
                                 // at moderate convergence; pressure still controls relief.
                                 arcs[i] = Math.Max(arcs[i], MathF.Sqrt(strength) * arc * pulse);
                                 uplift[i] = Math.Max(uplift[i], strength * arc * (0.5f + 0.5f * pulse));
-                                if (signed < 0)
+                                if (_manifest.GeneratorVersion >= 47)
+                                    uplift[i] = Math.Max(uplift[i], strength * Band(distance, belt));
+                                if (_manifest.GeneratorVersion < 47 && signed < 0)
                                     depression[i] = Math.Max(depression[i], strength * Band(signed + arcOffset * 0.45f, arcWidth * 0.75f) * endFade * 0.8f);
                             }
                         }
@@ -129,7 +134,8 @@ public static partial class WorldGenerator
                         {
                             // Transform motion weakens a narrow fault zone; it
                             // does not create a mountain chain by itself.
-                            depression[i] = Math.Max(depression[i], Math.Min(0.2f, contact.Shear * 0.06f) * Band(distance, belt * 0.5f));
+                            if (_manifest.GeneratorVersion < 47)
+                                depression[i] = Math.Max(depression[i], Math.Min(0.2f, contact.Shear * 0.06f) * Band(distance, belt * 0.5f));
                         }
                     }
                 }
@@ -148,13 +154,23 @@ public static partial class WorldGenerator
                 if ((_polarBands is not null && _polarBands.KindAt(HexGrid.Center(HexAt(i))) != PlateKind.Normal) ||
                     (_oceanicMargins is not null && _oceanicMargins.SideAt(HexGrid.Center(HexAt(i))) != 0))
                     uplift[i] = -Math.Max(0.7f, depression[i]);
-                if (_ridges is not null) _ridges[i] = uplift[i] - depression[i];
+                // v52 island placement reads net relief even in the Land stage,
+                // where the optional output ridge array is not allocated.
+                if (_ridges is not null || _manifest.GeneratorVersion >= 52) uplift[i] -= depression[i];
             }, progress, GenerationStep.Land, 70, 80);
 
             float sea = FindSculptedSeaLevel();
             WaterType[] water = SelectPlateSeaLevel(sea);
             if (_manifest.GeneratorVersion >= 35) SeparatePlateContinents(water, sea);
             if (_manifest.GeneratorVersion >= 42) SculptWaterMargins(water, sea);
+            if (_manifest.GeneratorVersion == 51) ShapeSmallIslandsLegacy51(water, uplift);
+            if (_manifest.GeneratorVersion >= 52) AddSmallIslands(water, uplift, sea);
+            if (PolarIceField.Enabled(_manifest))
+            {
+                var ice = new PolarIceField(_manifest);
+                for (int i = 0; i < water.Length; i++)
+                    if (ice.IsLand(i)) { water[i] = WaterType.None; _scores[i] = sea + 0.1f; }
+            }
             VisitChunks(_chunks, (i, _, _) =>
             {
                 float altitude = _scores[i] - sea;
@@ -197,7 +213,7 @@ public static partial class WorldGenerator
 
         private WaterType[] SelectPlateSeaLevel(float sea)
         {
-            int target = (int)((long)_domain.PercentageAreaCount * _settings.LandPercent / 100);
+            int target = PlateLandTarget();
             var water = new WaterType[_scores.Length];
             int land = 0;
             for (int i = 0; i < water.Length; i++)
@@ -220,6 +236,15 @@ public static partial class WorldGenerator
             }
             while (nearest.TryDequeue(out int i, out _)) water[i] = remove ? WaterType.Lake : WaterType.None;
             return water;
+        }
+
+        private int PlateLandTarget()
+        {
+            int target = (int)((long)_domain.PercentageAreaCount * _settings.LandPercent / 100);
+            if (_manifest.GeneratorVersion < 49) return target;
+            int eligible = 0;
+            foreach (float score in _scores) if (float.IsFinite(score)) eligible++;
+            return Math.Min(target, eligible);
         }
     }
 

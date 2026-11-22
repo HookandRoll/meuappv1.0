@@ -9,7 +9,7 @@ namespace Mapmaker.GodotApp;
 
 public partial class MapView
 {
-    private enum MapAction { New = 100, Open, Recent, Save, SaveAs, Generate }
+    private enum MapAction { New = 100, Open, Recent, Save, SaveAs, Generate, RenameRegion }
     private const int ProgressValuesPerStep = 101;
     private static string ProjectName => ProjectSettings.GetSetting("application/config/name").AsString();
 
@@ -18,6 +18,8 @@ public partial class MapView
     private Control _footer = null!;
     private Label _emptyStatus = null!;
     private Label _title = null!;
+    private Button _seedCopy = null!;
+    private Action<string> _copySeedAction = DisplayServer.ClipboardSet;
     private Button _newButton = null!;
     private Button _openButton = null!;
     private MenuButton _mapMenu = null!;
@@ -76,6 +78,14 @@ public partial class MapView
         _saveDialog.FileSelected += OnSaveFileSelected;
         _message = new AcceptDialog { DialogAutowrap = true };
         AddChild(_message);
+        _regionRename=new AcceptDialog();_regionName=new LineEdit { MaxLength=80,PlaceholderText="Nome da região" };
+        _regionRename.AddChild(_regionName);AddChild(_regionRename);
+        _regionRename.Confirmed+=()=>
+        {
+            if(_world is null || string.IsNullOrWhiteSpace(_regionName.Text))return;
+            GeographicRegions.Get(_world).Rename(_renamingRegion,_regionName.Text);
+            _dirty=true;_regionLabels.QueueRedraw();RefreshInterface();RefreshInspection();
+        };
         _discardDialog = new ConfirmationDialog { Title = "Alterações sem salvar", DialogText = "O mapa tem alterações sem salvar. Descartar as alterações e continuar?" };
         AddChild(_discardDialog);
         _discardDialog.GetOkButton().Text = "Descartar";
@@ -94,6 +104,7 @@ public partial class MapView
             preferences = config.Load(Path.Combine(mapsDirectory, "World Simulation RPG", "mapmaker.cfg"));
         if (preferences == Error.Ok)
             _recentPath = config.GetValue("maps", "recent", "").AsString();
+        MenuTheme.Apply(this, MenuTheme.Create());
         RefreshInterface();
     }
 
@@ -109,6 +120,7 @@ public partial class MapView
         AddMenuItem(maps, "Salvar como…", (int)MapAction.SaveAs, Key.S, shift: true);
         maps.AddSeparator();
         maps.AddItem("Gerar terreno…", (int)MapAction.Generate);
+        maps.AddItem("Renomear região selecionada…", (int)MapAction.RenameRegion);
         maps.IdPressed += OnMapAction;
         header.AddChild(_mapMenu);
 
@@ -143,9 +155,21 @@ public partial class MapView
         _editorToggle.Toggled += SetEditorPanelOpen;
         header.AddChild(_editorToggle);
 
-        _title = AddLabel(header, ProjectName, 18, Ink);
+        var identity = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, CustomMinimumSize = new Vector2(138, 0) };
+        identity.AddThemeConstantOverride("separation", 0);
+        header.AddChild(identity);
+        _title = AddLabel(identity, ProjectName, 18, Ink);
         _title.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
         _title.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+        _seedCopy = new Button { Name = "CopySeed", Flat = true, Alignment = HorizontalAlignment.Left, TooltipText = "Clique para copiar a seed", TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis };
+        _seedCopy.AddThemeFontSizeOverride("font_size", 13);
+        _seedCopy.Pressed += () =>
+        {
+            if (_world is null) return;
+            _copySeedAction(_world.Manifest.Seed.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            _seedCopy.TooltipText = "Seed copiada!";
+        };
+        identity.AddChild(_seedCopy);
         var controls = new HBoxContainer();
         controls.AddThemeConstantOverride("separation", 14);
         _mapControls = controls;
@@ -159,7 +183,12 @@ public partial class MapView
         _gridToggle.Toggled += enabled => _material.SetShaderParameter("show_grid", enabled);
         controls.AddChild(_gridToggle);
         var relief = new CheckButton { Text = "Relevo", ButtonPressed = true };
-        relief.Toggled += enabled => _material.SetShaderParameter("show_relief", enabled);
+        relief.Toggled += enabled =>
+        {
+            _material.SetShaderParameter("show_relief", enabled);
+            _showVolcanoes = enabled;
+            _volcanoOverlay.Visible = enabled && (_layer == 0 || _layer == 6);
+        };
         controls.AddChild(relief);
         var vegetation = new CheckButton { Text = "Vegetação", ButtonPressed = true };
         vegetation.Toggled += enabled => _material.SetShaderParameter("show_vegetation", enabled);
@@ -187,6 +216,10 @@ public partial class MapView
     {
         bool compact = size.X < 1180;
         _mapControls.AddThemeConstantOverride("separation", compact ? 6 : 14);
+        foreach (Node child in _mapControls.GetChildren())
+            if (child is Control control) control.AddThemeFontSizeOverride("font_size", compact ? 14 : 18);
+        _layerSelect.CustomMinimumSize = new Vector2(compact ? 108 : 132, 36);
+        _editorToggle.AddThemeFontSizeOverride("font_size", compact ? 15 : 18);
         _title.AddThemeFontSizeOverride("font_size", compact ? 15 : 18);
         _editorPanel.FitIn(size);
         UpdateMapCanvas();
@@ -261,7 +294,9 @@ public partial class MapView
         var stack = new VBoxContainer();
         stack.AddThemeConstantOverride("separation", 14);
         card.AddChild(stack);
-        AddLabel(stack, "Nenhum mapa aberto", 22, Ink);
+        var heading = AddLabel(stack, ProjectName, 28, Ink);
+        heading.AddThemeFontOverride("font", MenuTheme.TitleFont);
+        AddLabel(stack, "Nenhum mapa aberto", 18, Ink);
         _emptyStatus = AddLabel(stack, "", 14, Muted);
         _emptyStatus.Hide();
         var actions = new HBoxContainer();
@@ -309,6 +344,7 @@ public partial class MapView
         }
         switch ((MapAction)id)
         {
+            case MapAction.RenameRegion: ShowRegionRename();break;
             case MapAction.New:
                 ConfirmReplace(() => _creation.ShowForm());
                 break;
@@ -389,6 +425,7 @@ public partial class MapView
                 var (world, buffers) = await Task.Run(() =>
                 {
                     WorldData result = WorldGenerator.Create(manifest, ReportGenerationProgress);
+                    if(generated)GeographicRegions.Get(result);
                     GlobalDataTextures.Buffers? data = generated ? GlobalDataTextures.BuildBuffers(result) : null;
                     return (result, data);
                 });
@@ -425,6 +462,7 @@ public partial class MapView
             var (world, buffers) = await Task.Run(() =>
             {
                 WorldData result = WorldFile.Load(path);
+                if(result.Manifest.Generation.Stage!=GenerationStage.Blank)GeographicRegions.Get(result);
                 GlobalDataTextures.Buffers? data = result.Manifest.Generation.Stage == GenerationStage.Blank
                     ? null : GlobalDataTextures.BuildBuffers(result);
                 return (result, data);
@@ -546,7 +584,10 @@ public partial class MapView
             SetEditorPanelOpen(false);
         RefreshEditor();
         _title.Text = hasMap ? _world!.Manifest.WorldName + (_dirty ? " •" : "") : ProjectName;
+        _seedCopy.Visible = hasMap;
+        _seedCopy.Text = hasMap ? $"Seed: {_world!.Manifest.Seed}" : "";
         _mapMenu.Disabled = _busy;
+        _mapMenu.GetPopup().SetItemDisabled(_mapMenu.GetPopup().GetItemIndex((int)MapAction.RenameRegion),!hasMap);
         _newButton.Disabled = _busy;
         _openButton.Disabled = _busy;
         PopupMenu menu = _mapMenu.GetPopup();
