@@ -24,6 +24,7 @@
     <Compile Include="GeographicRegionChecks.cs" />
     <Compile Include="OceanIslandChecks.cs" />
     <Compile Include="AtlasArchipelagoChecks.cs" />
+    <Compile Include="AnnualClimateChecks.cs" />
   </ItemGroup>
 </Project>
 

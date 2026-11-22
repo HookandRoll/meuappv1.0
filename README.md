@@ -1,10 +1,18 @@
 # Jota Fantasy Map Maker
 
-**Alpha 1.1.54** · Mapas de fantasia para RPG, com editor de terreno, tectônica, clima e rios no Godot 4 .NET.
+**Alpha 1.1.63** · Mapas de fantasia para RPG, com editor de terreno, tectônica, clima e rios no Godot 4 .NET.
 
-Em desenvolvimento nesta árvore: **gerador v54**, com a [integração dos 21 biomas](results/Biomas_Geleiras_Vulcoes_v46.md), [correções de formas e tectônica](results/Formas_Naturais_v47.md) e [geleiras sem recortes diagonais e vulcões destacados](results/Geleiras_Vulcoes_v48.md).
+Mapas novos usam o **gerador v63**, com clima médio anual. No formulário de terreno completo, a temperatura pode variar em ±5 °C e a precipitação em ±10%. O relevo começa a reter vapor acima de 1.800 m e bloqueia sua passagem pela crista a partir de 2.800 m. Parte da umidade bloqueada volta para o lado de onde veio e se espalha em direção a terrenos mais baixos e secos.
 
-Executável portátil para Windows x64 na [release Alpha 1.1.54](https://github.com/HookandRoll/meuappv1.0/releases/tag/v1.1.54-alpha). Veja [as mudanças desde a Alpha 1.1.32](RELEASE_NOTES_1.1.54.md).
+O alcance lateral do vapor é de 2 hexes para cada lado em mapas de até 512 × 256 e chega a 31 hexes no Atlas máximo. Sobre o oceano, a condensação é metade da calculada para o mesmo vapor na v58.
+
+Oceanos e lagos também aumentam a chuva junto às margens, em todas as direções. Rios umedecem os solos vizinhos, afetando os biomas depois que a hidrologia foi calculada. O efeito diminui a cada hex de distância.
+
+A precipitação anual em terra inclui o equivalente em água da neve. Faixas tropicais úmidas e temperadas também recebem mais precipitação de fundo. O gerador só forma desertos a partir de 5 °C de temperatura média anual.
+
+A camada **Ventos** mostra a direção predominante do transporte de vapor por latitude. Clique em um hex para ver os pesos em cada direção. A partir do Atlas v58, o vapor que sai por uma borda lateral continua na borda oposta, na mesma latitude.
+
+Executável portátil para Windows x64 na [release Alpha 1.1.63](https://github.com/HookandRoll/meuappv1.0/releases/tag/v1.1.63-alpha). Veja [as mudanças desde a Alpha 1.1.54](RELEASE_NOTES_1.1.63.md).
 
 As artes atuais têm três variações por elemento, vegetação isométrica e relevo sobreposto. Veja o [walkthrough visual](docs/Art_Walkthrough_1.1.30.md) e os [créditos das artes](THIRD_PARTY_NOTICES.md).
 
@@ -74,7 +82,7 @@ O teste verifica o estado inicial, a seleção de hexes, as arestas compartilhad
 
 O núcleo em `src/Core` usa C# puro. `src/GodotApp` prepara as texturas e a interface, e o shader desenha terreno, relevo e vegetação com a arte de `tiles`, `relief` e `vegetation`. O `.world` é um ZIP versionado com a configuração de geração, os dados densos e as entidades esparsas. O arquivo é montado em um temporário antes de substituir o save anterior. A especificação na raiz lista os marcos seguintes.
 
-Para exportar o EXE portátil, instale os templates Windows .NET correspondentes ao Godot 4.7.2 e execute `godot --headless --path . --editor --export-release "Windows Desktop"`. O preset gera `dist/Jota-Fantasy-Map-Maker-Alpha-1.1.54.exe`, com PCK e runtime incorporados.
+Para exportar o EXE portátil, instale os templates Windows .NET correspondentes ao Godot 4.7.2 e execute `godot --headless --path . --editor --export-release "Windows Desktop"`. O preset gera `dist/Jota-Fantasy-Map-Maker-Alpha-1.1.63.exe`, com PCK e runtime incorporados.
 
 ## Agradecimentos
 

@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="Jota Fantasy Map Maker"
-config/version="1.1.54-alpha"
+config/version="1.1.63-alpha"
 run/main_scene="res://src/GodotApp/Map.tscn"
 config/features=PackedStringArray("4.7", "C#", "GL Compatibility")
 

@@ -9,7 +9,7 @@ public readonly record struct GenerationProgress(GenerationStep Step, int Percen
 
 public static partial class WorldGenerator
 {
-    public const int Version = 54;
+    public const int Version = 63;
     internal const short SculptedStraitDepth = -137;
     private const int HistogramSize = 2048;
     // Two forest growth passes read up to two hexes away each. Cleanup reads one more.
@@ -61,29 +61,40 @@ public static partial class WorldGenerator
             TerrainClassifier.ReclassifyRegion(world, region, updateRelief: false);
             return;
         }
-        RegenerateRegion(world, region, fields, progress);
+        var regenerated = RegenerateRegion(world, region, fields, progress);
         world.GeographyDirty = true;
         if ((fields & HexLocks.Rivers) != 0 && world.Manifest.GeneratorVersion >= 18 &&
             world.Manifest.Generation.Stage == GenerationStage.Terrain && world.Manifest.Generation.Algorithm == TerrainAlgorithm.ContinentalSculpt)
             RegenerateRivers(world, region);
         if ((fields & HexLocks.Biome) != 0 && world.Manifest.GeneratorVersion >= 18)
-            ApplyFluvialBiomes(world, region, (fields & HexLocks.Features) != 0);
+        {
+            Func<int, BiomeType>? baseBiome = null;
+            // Evaluate contextual habitats from the same base biomes on both sides of the selection.
+            if (world.Manifest.GeneratorVersion >= 56 && regenerated is not null)
+                baseBiome = cell =>
+                {
+                    int local = regenerated.Neighbor(HexGrid.FromOffset(cell % world.Width, cell / world.Width), 0, 0);
+                    return local >= 0 && !regenerated.Locked(cell, HexLocks.Biome)
+                        ? regenerated.Biomes[local] : world.Biomes[cell];
+                };
+            ApplyFluvialBiomes(world, region, (fields & HexLocks.Features) != 0, baseBiome);
+        }
         else if ((fields & HexLocks.Features) != 0 && world.Manifest.GeneratorVersion >= 46)
             ApplyContextBiomes(world, region, updateFeatures: true, updateBiomes: false);
     }
 
-    private static void RegenerateRegion(WorldData world, WorldRegion region, HexLocks fields,
+    private static GenerationArea? RegenerateRegion(WorldData world, WorldRegion region, HexLocks fields,
         Action<GenerationProgress>? progress)
     {
         if (region.Width <= 0 || region.Height <= 0 || region.Column < 0 || region.Row < 0 ||
             region.Column > world.Width - region.Width || region.Row > world.Height - region.Height)
             throw new ArgumentOutOfRangeException(nameof(region));
         if (world.Manifest.Generation.Stage == GenerationStage.Blank)
-            return;
+            return null;
         if (world.Manifest.Generation.PolarOceanRows > 0)
         {
             RegeneratePolarRegion(world, region, fields, progress);
-            return;
+            return null;
         }
 
         int margin = world.Manifest.Generation.Stage == GenerationStage.Terrain
@@ -108,6 +119,7 @@ public static partial class WorldGenerator
             selection: region, fields: fields);
         Generate(world, area, progress);
         area.CopyRegionTo(world, region);
+        return area;
     }
 
     private static WorldRegion ExpandRegion(WorldData world, WorldRegion region, int margin)
@@ -284,70 +296,78 @@ public static partial class WorldGenerator
         if (!terrain)
             return;
 
-        int climateRadius = Math.Max(1, world.Height / 24);
-        float MaritimeScoreAt(int col, int row) => water?[row * world.Width + col] == WaterType.Lake
-            ? seaLevel + 0.28f : ScoreAt(col, row);
-        float EditedMaritimeScore(int col, int row)
+        if (manifest.GeneratorVersion >= 55)
+            ApplyAnnualClimate(world, area, seed, progress);
+        else
+            ApplyLegacyClimate();
+
+        void ApplyLegacyClimate()
         {
-            int cell = row * world.Width + col;
-            float score = water is null ? ScoreAt(col, row) : MaritimeScoreAt(col, row);
-            if (area.Writes(col, row, cell, HexLocks.Water))
-                return score;
-            WaterType generated = water is null ? (score < seaLevel ? WaterType.Ocean : WaterType.None) : water[cell];
-            WaterType current = world.Water[cell];
-            if (current == generated)
-                return score;
-            return current == WaterType.Ocean ? Math.Min(score, seaLevel - 0.22f) : Math.Max(score, seaLevel + 0.28f);
-        }
-        Func<int, int, float> maritimeScore = EditedMaritimeScore;
-        short ClimateElevation(int x, int y)
-        {
-            int cell = y * world.Width + x;
-            if (manifest.GeneratorVersion >= 25)
+            int climateRadius = Math.Max(1, world.Height / 24);
+            float MaritimeScoreAt(int col, int row) => water?[row * world.Width + col] == WaterType.Lake
+                ? seaLevel + 0.28f : ScoreAt(col, row);
+            float EditedMaritimeScore(int col, int row)
             {
-                int local = area.Neighbor(HexGrid.FromOffset(x, y), 0, 0);
-                // Atmospheric uplift starts at the water surface, not the seabed.
-                return local >= 0 ? (area.Water[local] == WaterType.None ? area.Elevation[local] : (short)0)
-                    : (world.Water[cell] == WaterType.None ? world.Elevation[cell] : (short)0);
+                int cell = row * world.Width + col;
+                float score = water is null ? ScoreAt(col, row) : MaritimeScoreAt(col, row);
+                if (area.Writes(col, row, cell, HexLocks.Water))
+                    return score;
+                WaterType generated = water is null ? (score < seaLevel ? WaterType.Ocean : WaterType.None) : water[cell];
+                WaterType current = world.Water[cell];
+                if (current == generated)
+                    return score;
+                return current == WaterType.Ocean ? Math.Min(score, seaLevel - 0.22f) : Math.Max(score, seaLevel + 0.28f);
             }
-            if (!area.Writes(x, y, cell, HexLocks.Elevation)) return world.Elevation[cell];
-            if (water?[cell] != WaterType.None) return 0;
-            short sample = LandElevation((float)x / world.Width, (float)y / world.Height, aspect, ScoreAt(x, y) - seaLevel,
-                seed, ridges?[cell], reliefDensity, manifest.GeneratorVersion == 27).Elevation;
-            return manifest.GeneratorVersion is >= 24 and < 26 && sculpt ? NarrowRidgeElevation(sample, ridges?[cell] ?? 0, manifest.GeneratorVersion) : sample;
-        }
-        WaterType ClimateWater(int x, int y) => area.Writes(x, y, y * world.Width + x, HexLocks.Water)
-            ? water?[y * world.Width + x] ?? WaterType.None : world.Water[y * world.Width + x];
-        progress?.Invoke(new(GenerationStep.Climate, 0));
-        var regionalRain = manifest.GeneratorVersion >= 30
-            ? BuildRegionalRain(world, area, ClimateElevation, ClimateWater, seed) : null;
-        ushort[]? moisture = manifest.GeneratorVersion is >= 25 and < 30 && sculpt
-            ? BuildOrographicMoisture(world, area, ClimateElevation, ClimateWater) : null;
-        VisitChunks(area.Chunks, (i, col, row) =>
-        {
-            col = area.WorldColumn(col);
-            row = area.WorldRow(row);
-            float maritime = area.Water[i] == WaterType.Ocean ? 1f
-                : SeaExposure(maritimeScore, seaLevel, world.Width, world.Height, col, row, climateRadius, sculpt && manifest.HorizontalWrap);
-            if (regionalRain is not null) maritime = regionalRain.Moisture[i] / 65535f;
-            var (temperature, rainfall) = Climate((float)col / world.Width, (float)row / world.Height,
-                aspect, area.Elevation[i], maritime, seed, manifest.GeneratorVersion, manifest.HorizontalWrap);
-            if (regionalRain is not null) rainfall = regionalRain.Rain[i];
-            else if (moisture is not null)
+            Func<int, int, float> maritimeScore = EditedMaritimeScore;
+            short ClimateElevation(int x, int y)
             {
-                int wind = ClimateWind(row, world.Height);
-                int upwind = col - wind;
-                if (manifest.HorizontalWrap) upwind = (upwind + world.Width) % world.Width;
-                else upwind = Math.Clamp(upwind, 0, world.Width - 1);
-                rainfall = ContinuousOrographicRain(rainfall, moisture[i] / 65535f, ClimateElevation(upwind, row), area.Elevation[i],
-                    area.Water[i], Math.Max(8, world.Height / 16f));
+                int cell = y * world.Width + x;
+                if (manifest.GeneratorVersion >= 25)
+                {
+                    int local = area.Neighbor(HexGrid.FromOffset(x, y), 0, 0);
+                    // Atmospheric uplift starts at the water surface, not the seabed.
+                    return local >= 0 ? (area.Water[local] == WaterType.None ? area.Elevation[local] : (short)0)
+                        : (world.Water[cell] == WaterType.None ? world.Elevation[cell] : (short)0);
+                }
+                if (!area.Writes(x, y, cell, HexLocks.Elevation)) return world.Elevation[cell];
+                if (water?[cell] != WaterType.None) return 0;
+                short sample = LandElevation((float)x / world.Width, (float)y / world.Height, aspect, ScoreAt(x, y) - seaLevel,
+                    seed, ridges?[cell], reliefDensity, manifest.GeneratorVersion == 27).Elevation;
+                return manifest.GeneratorVersion is >= 24 and < 26 && sculpt ? NarrowRidgeElevation(sample, ridges?[cell] ?? 0, manifest.GeneratorVersion) : sample;
             }
-            else if (manifest.GeneratorVersion >= 18 && sculpt)
-                rainfall = OrographicRain(col, row, world.Width, world.Height, manifest.HorizontalWrap, rainfall, ClimateElevation, ClimateWater, manifest.GeneratorVersion >= 20);
-            int cell = row * world.Width + col;
-            area.Temperature[i] = area.Writes(col, row, cell, HexLocks.Temperature) ? temperature : world.Temperature[cell];
-            area.Rainfall[i] = area.Writes(col, row, cell, HexLocks.Rainfall) ? rainfall : world.Rainfall[cell];
-        }, progress, GenerationStep.Climate, 0, 100);
+            WaterType ClimateWater(int x, int y) => area.Writes(x, y, y * world.Width + x, HexLocks.Water)
+                ? water?[y * world.Width + x] ?? WaterType.None : world.Water[y * world.Width + x];
+            progress?.Invoke(new(GenerationStep.Climate, 0));
+            var regionalRain = manifest.GeneratorVersion >= 30
+                ? BuildRegionalRain(world, area, ClimateElevation, ClimateWater, seed) : null;
+            ushort[]? moisture = manifest.GeneratorVersion is >= 25 and < 30 && sculpt
+                ? BuildOrographicMoisture(world, area, ClimateElevation, ClimateWater) : null;
+            VisitChunks(area.Chunks, (i, col, row) =>
+            {
+                col = area.WorldColumn(col);
+                row = area.WorldRow(row);
+                float maritime = area.Water[i] == WaterType.Ocean ? 1f
+                    : SeaExposure(maritimeScore, seaLevel, world.Width, world.Height, col, row, climateRadius, sculpt && manifest.HorizontalWrap);
+                if (regionalRain is not null) maritime = regionalRain.Moisture[i] / 65535f;
+                var (temperature, rainfall) = Climate((float)col / world.Width, (float)row / world.Height,
+                    aspect, area.Elevation[i], maritime, seed, manifest.GeneratorVersion, manifest.HorizontalWrap);
+                if (regionalRain is not null) rainfall = regionalRain.Rain[i];
+                else if (moisture is not null)
+                {
+                    int wind = ClimateWind(row, world.Height);
+                    int upwind = col - wind;
+                    if (manifest.HorizontalWrap) upwind = (upwind + world.Width) % world.Width;
+                    else upwind = Math.Clamp(upwind, 0, world.Width - 1);
+                    rainfall = ContinuousOrographicRain(rainfall, moisture[i] / 65535f, ClimateElevation(upwind, row), area.Elevation[i],
+                        area.Water[i], Math.Max(8, world.Height / 16f));
+                }
+                else if (manifest.GeneratorVersion >= 18 && sculpt)
+                    rainfall = OrographicRain(col, row, world.Width, world.Height, manifest.HorizontalWrap, rainfall, ClimateElevation, ClimateWater, manifest.GeneratorVersion >= 20);
+                int cell = row * world.Width + col;
+                area.Temperature[i] = area.Writes(col, row, cell, HexLocks.Temperature) ? temperature : world.Temperature[cell];
+                area.Rainfall[i] = area.Writes(col, row, cell, HexLocks.Rainfall) ? rainfall : world.Rainfall[cell];
+            }, progress, GenerationStep.Climate, 0, 100);
+        }
 
         progress?.Invoke(new(GenerationStep.Biomes, 0));
         int inlandSteps = Math.Max(1, world.Height / 96);
@@ -400,7 +420,9 @@ public static partial class WorldGenerator
                 rainfall = (ushort)Math.Max(0, rainfall + (int)(variation * 220f));
             }
             area.Biomes[i] = manifest.GeneratorVersion >= 46
-                ? ChooseExpandedBiome(area.Elevation[i], temperature, rainfall, area.WorldColumn(col), area.WorldRow(row), world.Width, world.Height, manifest.HorizontalWrap, seed, !openPlains[i])
+                ? LimitColdDesert(ChooseExpandedBiome(area.Elevation[i], temperature, rainfall, area.WorldColumn(col),
+                    area.WorldRow(row), world.Width, world.Height, manifest.HorizontalWrap, seed, !openPlains[i]),
+                    area.Temperature[i], manifest.GeneratorVersion)
                 : ChooseBiome(elevation, temperature, rainfall, forests: !openPlains[i]);
         }, progress, GenerationStep.Biomes, 0, beachCandidates is null ? 65 : 59);
         if (beachCandidates is not null)
@@ -420,6 +442,7 @@ public static partial class WorldGenerator
                 if (area.Water[i] != WaterType.None) return;
                 if (polarIce is not null && polarIce.IsPolar(cell)) area.Biomes[i] = BiomeType.Glacier;
                 else if (volcanoes is not null && volcanoes[cell] != 0) area.Biomes[i] = BiomeType.Volcanic;
+                else area.Biomes[i] = LimitColdDesert(area.Biomes[i], area.Temperature[i], manifest.GeneratorVersion);
             }, null, GenerationStep.Biomes, 0, 100);
     }
 

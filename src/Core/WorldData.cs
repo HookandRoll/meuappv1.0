@@ -41,7 +41,8 @@ public static class Biomes
 
 public sealed record GenerationSettings(
     TerrainAlgorithm Algorithm, int Continents, int LandPercent, int CoastDetail, GenerationStage Stage,
-    MapExtent Extent = MapExtent.Region, int PolarOceanRows = 0, int ReferenceWidth = 0, int ReferenceHeight = 0);
+    MapExtent Extent = MapExtent.Region, int PolarOceanRows = 0, int ReferenceWidth = 0, int ReferenceHeight = 0,
+    int TemperatureOffsetC = 0, int PrecipitationOffsetPercent = 0);
 
 public sealed record WorldManifest(
     int WorldSaveVersion, string WorldName, int Seed, int GeneratorVersion, int Width, int Height,
@@ -121,7 +122,9 @@ public sealed class WorldData
             !double.IsFinite(manifest.HexDistance) || manifest.HexDistance <= 0 || manifest.DistanceUnit != "km")
             throw new ArgumentException("Nome ou escala do mundo inválido.");
         if (manifest.Generation is not { Continents: >= 1 and <= 12, LandPercent: >= 0 and <= 100, CoastDetail: >= 0 and <= 100 } options
-            || !Enum.IsDefined(options.Algorithm) || !Enum.IsDefined(options.Stage) || !Enum.IsDefined(options.Extent))
+            || !Enum.IsDefined(options.Algorithm) || !Enum.IsDefined(options.Stage) || !Enum.IsDefined(options.Extent)
+            || options.TemperatureOffsetC is not (-5 or 0 or 5)
+            || options.PrecipitationOffsetPercent is not (-10 or 0 or 10))
             throw new ArgumentException("Configuração de geração inválida.");
         int polarRows = options.PolarOceanRows;
         int centralHeight = manifest.Height - 2 * polarRows;

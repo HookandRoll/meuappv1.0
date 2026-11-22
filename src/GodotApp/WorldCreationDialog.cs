@@ -24,6 +24,8 @@ public partial class WorldCreationDialog : ConfirmationDialog
     private readonly SpinBox _continents = new() { MinValue = 1, MaxValue = 12, Value = 3 };
     private readonly HSlider _land = new() { Name = "LandPercent", MinValue = 0, MaxValue = 100, Step = 5, Value = DefaultLandPercent, TickCount = 21, TicksOnBorders = true };
     private readonly HSlider _coast = new() { Name = "CoastDetail", MinValue = 0, MaxValue = 100, Step = 10, Value = DefaultCoastDetail, TickCount = 11, TicksOnBorders = true };
+    private readonly OptionButton _temperature = new() { Name = "TemperatureOffset" };
+    private readonly OptionButton _precipitation = new() { Name = "PrecipitationOffset" };
     private readonly Label _hint = new();
     private readonly Label _capacityWarning = new() { Name = "WorldCapacityWarning" };
     private readonly Label _error = new();
@@ -36,9 +38,11 @@ public partial class WorldCreationDialog : ConfirmationDialog
     {
         DialogHideOnOk = false;
         GetCancelButton().Text = "Cancelar";
-        var form = new VBoxContainer { CustomMinimumSize = new Vector2(450, 0) };
+        var scroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
+        AddChild(scroll);
+        var form = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
         form.AddThemeConstantOverride("separation", 12);
-        AddChild(form);
+        scroll.AddChild(form);
         var fields = new GridContainer { Columns = 2 };
         form.AddChild(fields);
         AddField(fields, "Nome", _name);
@@ -81,6 +85,14 @@ public partial class WorldCreationDialog : ConfirmationDialog
         AddField(_generationFields, "Continentes principais", _continents);
         AddField(_generationFields, "Área de terra alvo", PercentageSlider(_land));
         AddField(_generationFields, "Irregularidade da costa", PercentageSlider(_coast));
+        _temperature.AddItem("Padrão");
+        _temperature.AddItem("+5 °C");
+        _temperature.AddItem("−5 °C");
+        _precipitation.AddItem("Padrão");
+        _precipitation.AddItem("+10%");
+        _precipitation.AddItem("−10%");
+        AddField(_generationFields, "Temperatura média anual", _temperature);
+        AddField(_generationFields, "Precipitação anual", _precipitation);
         _land.ValueChanged += _ => RefreshOptions();
         form.AddChild(_hint);
         _capacityWarning.AddThemeColorOverride("font_color", new Color("#e7ba70"));
@@ -111,6 +123,8 @@ public partial class WorldCreationDialog : ConfirmationDialog
         _continents.Value = existing?.Generation.Continents ?? 3;
         _land.Value = existing?.Generation.LandPercent ?? DefaultLandPercent;
         _coast.Value = existing?.Generation.CoastDetail ?? DefaultCoastDetail;
+        _temperature.Select(OffsetIndex(existing?.Generation.TemperatureOffsetC ?? 0));
+        _precipitation.Select(OffsetIndex(existing?.Generation.PrecipitationOffsetPercent ?? 0));
         if (existing is null)
             RollSeed();
         else
@@ -124,6 +138,8 @@ public partial class WorldCreationDialog : ConfirmationDialog
     {
         bool generate = _stage.Selected != (int)GenerationStage.Blank;
         _generationFields.Visible = generate;
+        bool climate = _stage.Selected == (int)GenerationStage.Terrain;
+        _temperature.Disabled = _precipitation.Disabled = !climate;
         Vector2I reference = ReferenceSize();
         bool atlas = _extent.Selected == (int)MapExtent.World;
         var expanded = MapDomain.ExpandedSize(reference.X, reference.Y);
@@ -159,7 +175,8 @@ public partial class WorldCreationDialog : ConfirmationDialog
         var expanded = MapDomain.ExpandedSize(reference.X, reference.Y);
         var settings = new GenerationSettings(TerrainAlgorithm.ContinentalSculpt, (int)_continents.Value,
             (int)_land.Value, (int)_coast.Value, (GenerationStage)_stage.Selected, (MapExtent)_extent.Selected,
-            PolarOceanRows: 0, ReferenceWidth: atlas ? reference.X : 0, ReferenceHeight: atlas ? reference.Y : 0);
+            PolarOceanRows: 0, ReferenceWidth: atlas ? reference.X : 0, ReferenceHeight: atlas ? reference.Y : 0,
+            TemperatureOffsetC: OffsetValue(_temperature, 5), PrecipitationOffsetPercent: OffsetValue(_precipitation, 10));
         DateTimeOffset now = DateTimeOffset.UtcNow;
         var manifest = new WorldManifest(WorldFile.CurrentVersion, name, seed, WorldGenerator.Version,
             atlas ? expanded.Width : reference.X, atlas ? expanded.Height : reference.Y,
@@ -201,7 +218,17 @@ public partial class WorldCreationDialog : ConfirmationDialog
         return row;
     }
 
-    private Vector2I FormSize() => new(660, _generationFields.Visible ? 640 : 400);
+    private static int OffsetIndex(int offset) => offset > 0 ? 1 : offset < 0 ? 2 : 0;
+
+    private static int OffsetValue(OptionButton choice, int magnitude) => choice.Selected switch
+    {
+        1 => magnitude,
+        2 => -magnitude,
+        _ => 0
+    };
+
+    private Vector2I FormSize() => new(Math.Min(660, GetTree().Root.Size.X),
+        Math.Min(_generationFields.Visible ? 700 : 400, Math.Max(1, GetTree().Root.Size.Y - 48)));
 
     private static string DescribeSize(Vector2I size) => $"{size.X} × {size.Y}";
 

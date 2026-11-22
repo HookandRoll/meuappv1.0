@@ -17,7 +17,11 @@ public partial class MapView
             var coast = _creation.FindChild("CoastDetail", true, false) as HSlider;
             Require(land is not null && land.MinValue==0 && land.MaxValue==100 && land.Step==5 && land.Value==25, "Slider de terra sem intervalo/passo/default pedidos.");
             Require(coast is not null && coast.Step==10 && coast.Value==80, "Slider da costa invalido.");
-            Screenshot("menus-v49-create.png");
+            var temperature = _creation.FindChild("TemperatureOffset", true, false) as OptionButton;
+            var precipitation = _creation.FindChild("PrecipitationOffset", true, false) as OptionButton;
+            Require(temperature is { ItemCount: 3, Selected: 0, Disabled: false } &&
+                precipitation is { ItemCount: 3, Selected: 0, Disabled: false }, "Controles de clima ausentes ou sem padrão.");
+            Screenshot("menus-v55-create.png");
             land!.Value=0; Require(land.Value==0,"Slider sem zero.");
             land.Value=100; Require(land.Value==100,"Slider sem cem.");
             land.Value=36; Require(land.Value==35,"Passo de terra nao respeitado.");

@@ -46,6 +46,8 @@ public sealed class MapDomain
     public bool Contains(int col, int row) => (uint)row < Height && (uint)col < Width &&
         (!IsAtlas || (col >= _left![row] && col < _right![row]));
     public bool Contains(int cell) => (uint)cell < Width * Height && Contains(cell % Width, cell / Width);
+    internal (int Left, int Right) RowBounds(int row) =>
+        _left is null ? (0, Width) : (_left[row], _right![row]);
     public bool CountsTowardLandQuota(int cell) => Contains(cell) && (_quotaBands is null ||
         _quotaBands.KindAt(HexGrid.Center(HexGrid.FromOffset(cell % Width, cell / Width))) == PlateKind.Normal);
     public Vector2 Normalize(Vector2 p) => new((p.X / HexGrid.Root3 + 0.5f) / Width * 2 - 1,

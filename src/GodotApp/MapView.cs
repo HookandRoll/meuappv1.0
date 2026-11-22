@@ -6,8 +6,9 @@ namespace Mapmaker.GodotApp;
 
 public partial class MapView : Node2D
 {
+    private const int WindLayer = 8;
     private static readonly string[] Layers =
-        { "Terreno", "Elevação", "Temperatura", "Chuva", "Biomas", "Locks", "Tectônica", "Regiões" };
+        { "Terreno", "Elevação", "Temperatura", "Chuva", "Biomas", "Locks", "Tectônica", "Regiões", "Ventos" };
     private static readonly Color Ink = new("#ebe2cc");
     private static readonly Color Muted = new("#a89b84");
     private Node2D _map = null!;
@@ -25,6 +26,7 @@ public partial class MapView : Node2D
     private Vector2I _selected = new(-1, -1);
     private int _layer;
     private TectonicOverlay _tectonicOverlay = null!;
+    private WindOverlay _windOverlay = null!;
     private RiverOverlay _riverOverlay = null!;
     private VolcanoOverlay _volcanoOverlay = null!;
     private bool _showVolcanoes = true;
@@ -45,6 +47,8 @@ public partial class MapView : Node2D
         _map.AddChild(_volcanoOverlay);
         _tectonicOverlay = new TectonicOverlay { Visible = false };
         _map.AddChild(_tectonicOverlay);
+        _windOverlay = new WindOverlay { Visible = false };
+        _map.AddChild(_windOverlay);
         _regionLabels=new RegionLabels { Visible=false };_map.AddChild(_regionLabels);
         BuildInterface();
         GetViewport().SizeChanged += FitMap;
@@ -52,7 +56,11 @@ public partial class MapView : Node2D
 
         string[] args = OS.GetCmdlineUserArgs();
         string? benchmarkSize = Array.Find(args, arg => arg.StartsWith("--benchmark-size="));
-        if (Array.IndexOf(args, "--shore-feather-review") >= 0)
+        if (Array.IndexOf(args, "--wind-review") >= 0)
+            Callable.From(RunWindReview).CallDeferred();
+        else if (Array.IndexOf(args, "--annual-climate-review") >= 0)
+            Callable.From(RunAnnualClimateReview).CallDeferred();
+        else if (Array.IndexOf(args, "--shore-feather-review") >= 0)
             Callable.From(RunShoreFeatherReview).CallDeferred();
         else if (Array.IndexOf(args, "--regions-review") >= 0)
             Callable.From(RunRegionReview).CallDeferred();
@@ -224,6 +232,10 @@ public partial class MapView : Node2D
         SetEditorPanelVisible(false);
         ReleaseEditorPreview();
         _world = world;
+        _windOverlay.Domain = world.Domain;
+        _windOverlay.QueueRedraw();
+        _layerSelect.SetItemDisabled(WindLayer, stage < GenerationStage.Terrain || world.Manifest.GeneratorVersion < 55);
+        _layerSelect.SetItemTooltip(WindLayer, "Direção predominante do vento médio anual. Clique em um hex para ver os pesos.");
         _regionLabels.World=world;
         _layerSelect.SetItemDisabled(7,stage==GenerationStage.Blank);
         if(_layer==7)RefreshRegions();
@@ -306,6 +318,22 @@ public partial class MapView : Node2D
             return;
         }
         Vector2I offset = _selected;
+        if (_layer == WindLayer)
+        {
+            string edges = AnnualWind.WrapsAtlas(world) ? "Leste e oeste conectados"
+                : world.Manifest.HorizontalWrap
+                    ? world.Domain.IsAtlas ? "Conexão lateral parcial" : "Leste e oeste conectados"
+                    : "Bordas laterais abertas";
+            if (offset.X < 0)
+                _inspection.Text = $"Vento predominante  ·  ↗ NE    ↖ NO    ↘ SE    ↙ SO  ·  {edges}";
+            else
+            {
+                var (eastward, southward) = AnnualWind.DirectionWeights(offset.Y, world.Height);
+                _inspection.Text = $"Hex {offset.X}, {offset.Y}  ·  Leste {eastward:P0} / Oeste {1 - eastward:P0}  ·  Norte {1 - southward:P0} / Sul {southward:P0}  ·  {edges}";
+                _inspection.TooltipText = "Pesos por eixo. O transporte combina 72% ao longo da latitude e 28% entre latitudes.";
+            }
+            return;
+        }
         GenerationStage stage = world.Manifest.Generation.Stage;
         if (offset.X < 0)
         {
@@ -404,16 +432,22 @@ public partial class MapView : Node2D
 
     private void SetLayer(int index)
     {
+        bool refreshWindInspection = _layer == WindLayer || index == WindLayer;
         _layer = index;
         _layerSelect.Select(index);
         _regionLabels.Visible=index==7;
         if(index==7)RefreshRegions();
         _material.SetShaderParameter("layer", index == 6 ? 0 : index);
         _tectonicOverlay.Visible = index == 6;
+        _windOverlay.Visible = index == WindLayer;
+        if (_windOverlay.Visible)
+            _windOverlay.QueueRedraw();
         _riverOverlay.Visible = index == 0 || index == 6;
         _volcanoOverlay.Visible = _showVolcanoes && (index == 0 || index == 6);
         if (!_busy)
             RefreshEditorClimate();
+        if (refreshWindInspection)
+            RefreshInspection();
     }
 
     private static HBoxContainer AddBar(Control parent, Control.LayoutPreset preset, int top, int bottom)

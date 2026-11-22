@@ -471,10 +471,18 @@ vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, v
             size = vec2(1.35, 1.24) * mix(vec2(1.0), rand_scale, 0.4);
         }
 
-        vec2 uv = (tile - anchor) / size + vec2(0.5);
-        uv.x += (uv.y - 0.5) * skew;
+        float distant_relief = 1.0 - smoothstep(0.20, 0.72, detail_zoom);
+        float vertical_skew = 0.0;
+        if ((surface & 8) == 0 && (base_relief >= 2 && base_relief <= 5)) {
+            bool cliff = (surface & 16) != 0;
+            anchor += rand2 * (cliff ? vec2(0.11, 0.19) : vec2(0.045, 0.075)) * distant_relief;
+            vertical_skew = (float((rank >> 20u) & 255u) / 127.5 - 1.0) * 0.24 * distant_relief;
+        }
+        vec2 sample_pos = (tile - anchor) / size;
+        mat2 projection = mat2(vec2(1.0, vertical_skew), vec2(skew, 1.0));
+        vec2 uv = projection * sample_pos + vec2(0.5);
         if (inside_art(uv)) {
-            vec4 texel = sample_overlay(relief_art, art, uv, tile_dx / size, tile_dy / size, minification, 8.0);
+            vec4 texel = sample_overlay(relief_art, art, uv, projection * (tile_dx / size), projection * (tile_dy / size), minification, 8.0);
             float lum = dot(texel.rgb, vec3(0.299, 0.587, 0.114));
             // Preserve crisp dark ink contours & cliff shadows (lum < 0.25) and bright white snow caps (lum > 0.78),
             // while blending the grey stone/hill slopes semi-transparently with the underlying biome ground color!
@@ -708,7 +716,7 @@ void fragment() {
     vec3 color = vec3(0.055, 0.047, 0.038);
 
     if (inside(offset)) {
-        if (editor_preview && layer != 2 && layer != 3 && layer != 7) {
+        if (editor_preview && layer != 2 && layer != 3 && layer != 7 && layer != 8) {
             ivec3 preview_offset = ivec3(offset.x, offset.y % editor_band_height, offset.y / editor_band_height);
             vec4 data = texelFetch(editor_data, preview_offset, 0);
             vec4 surface = texelFetch(editor_data, preview_offset + ivec3(0, editor_band_height, 0), 0);
@@ -751,6 +759,12 @@ void fragment() {
                 : mix(vec3(0.75, 0.56, 0.35), vec3(0.14, 0.42, 0.63), clamp(unpack16(data.ba) / 3000.0, 0.0, 1.0));
         } else if (layer == 7) {
             color = texelFetch(region_data, offset, 0).rgb;
+        } else if (layer == 8) {
+            TerrainSample data = sample_terrain(hex);
+            int water = water_type(data);
+            float elevation = max(0.0, unpack16(data.height) - 32768.0);
+            color = water == 1 || water == 2 ? vec3(0.09, 0.17, 0.22)
+                : mix(vec3(0.22, 0.24, 0.22), vec3(0.38, 0.37, 0.32), clamp(elevation / 3500.0, 0.0, 1.0));
         } else {
             float locks = round(texelFetch(lock_data, offset, 0).r * 255.0);
             color = locks >= 2.0 ? vec3(0.69, 0.31, 0.37)

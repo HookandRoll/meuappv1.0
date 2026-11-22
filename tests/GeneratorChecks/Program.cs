@@ -19,6 +19,7 @@ catch (Exception ex)
 
 static void RunChecks(string[] args)
 {
+if (args.Contains("--annual-climate-only")) { WorldGenerator.CheckAnnualClimate(); return; }
 if (args.Contains("--atlas-spacing-only")) { WorldGenerator.CheckAtlasSpacing(args.Contains("--spacing-review")); return; }
 if (args.Contains("--atlas-only")) { WorldGenerator.CheckFullAtlas(); return; }
 if (args.Contains("--ocean-islands-only")) { WorldGenerator.CheckOceansAndSmallIslands(args.Contains("--island-review")); return; }
@@ -39,6 +40,7 @@ if (args.Contains("--majority-only")) return;
 WorldGenerator.CheckSwampMargins();
 if (args.Contains("--swamp-only")) return;
 WorldGenerator.CheckClimateAndHeights();
+WorldGenerator.CheckAnnualClimate();
 if (args.Contains("--climate-height-only")) return;
 WorldGenerator.CheckWaterMargins();
 if (args.Contains("--water-only")) return;

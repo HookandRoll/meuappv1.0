@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using Godot;
 using Mapmaker.Core;
@@ -53,6 +54,27 @@ public partial class MapView
             _map.Position = MapCanvasRect().GetCenter() - new Vector2(highCenter.X, highCenter.Y) * 12;
             UpdateArtworkZoom();
             await NextDraw(); await NextDraw(); Screenshot("relief-massif-highland.png");
+            if (OS.GetCmdlineUserArgs().Contains("--compare-relief-spacing"))
+            {
+                var updatedShader = _material.Shader;
+                string shaderBefore = ProjectSettings.GlobalizePath("res://.godot/relief-spacing-before.gdshader");
+                using var beforeShader = new Shader { Code = File.ReadAllText(shaderBefore) };
+                foreach (var (shader, name) in new[] { (beforeShader, "antes"), (updatedShader, "depois") })
+                {
+                    _material.Shader = shader;
+                    _artwork!.Bind(_material);
+                    InstallWorld(highland);
+                    SetLayer(0);
+                    _material.SetShaderParameter("show_grid", false);
+                    _material.SetShaderParameter("show_vegetation", false);
+                    _material.SetShaderParameter("show_details", false);
+                    _map.Scale = Vector2.One * 12;
+                    _map.Position = MapCanvasRect().GetCenter() - new Vector2(highCenter.X, highCenter.Y) * 12;
+                    UpdateArtworkZoom();
+                    await NextDraw(); await NextDraw();
+                    Screenshot($"relevo-v56-{name}.png");
+                }
+            }
             GD.Print($"RELIEF MASSIFS PASSED: uphill spurs and {centerArt}/196 interior symbols, unchanged flat classification.");
 
             var source = new WorldData(world.Manifest);

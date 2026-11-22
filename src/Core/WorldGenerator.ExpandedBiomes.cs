@@ -4,6 +4,11 @@ namespace Mapmaker.Core;
 
 public static partial class WorldGenerator
 {
+    private static BiomeType LimitColdDesert(BiomeType biome, short temperature, int version) =>
+        version >= 61 && biome == BiomeType.Desert && temperature < 50
+            ? (temperature <= -55 ? BiomeType.Tundra : BiomeType.Steppe)
+            : biome;
+
     private static bool ProtectedHabitat(BiomeType biome) => biome is BiomeType.None or BiomeType.Beach or BiomeType.Alpine or
         BiomeType.Glacier or BiomeType.Mangrove or BiomeType.Swamp or BiomeType.Bog or BiomeType.Oasis or BiomeType.Volcanic or BiomeType.SaltFlat;
     private static BiomeType ChooseExpandedBiome(short h, short t, ushort p, int x, int y, int width, int height, bool wrap, uint seed, bool forests = true)
@@ -24,17 +29,23 @@ public static partial class WorldGenerator
         return BiomeType.Grassland;
     }
 
-    private static void ApplyContextBiomes(WorldData world, WorldRegion region, bool updateFeatures, bool updateBiomes = true)
+    private static void ApplyContextBiomes(WorldData world, WorldRegion region, bool updateFeatures, bool updateBiomes = true,
+        Func<int, BiomeType>? baseBiome = null)
     {
         var ice = PolarIceField.Enabled(world.Manifest) ? new PolarIceField(world.Manifest) : null;
         uint seed = unchecked((uint)world.Manifest.Seed);
+        byte[]? riverMoisture = world.Manifest.GeneratorVersion >= 63 && world.HexToRivers.Count > 0
+            ? SpreadWaterMoisture(world, world.Water, world.Elevation, fromRivers: true) : null;
+        int moistureScale = WaterMoistureScale(world.Height);
         // Evaluate the halo against one immutable source before writing. Regional
         // regeneration and traversal order therefore produce the same vote.
         (BiomeType Biome, GeographicFeatures Features) Evaluate(int i)
         {
             if (!world.Domain.Contains(i) || world.Water[i] != WaterType.None) return (world.Biomes[i], world.Features[i]);
             int h = world.Elevation[i], t = world.Temperature[i], p = world.Rainfall[i];
-            var biome = world.Biomes[i]; var features = world.Features[i] & ~(GeographicFeatures.Canyon | GeographicFeatures.BadlandRocks);
+            var biome = baseBiome?.Invoke(i) ?? world.Biomes[i];
+            int moisture = riverMoisture is null ? 0 : riverMoisture[i] * MoisturePerLevel / moistureScale;
+            var features = world.Features[i] & ~(GeographicFeatures.Canyon | GeographicFeatures.BadlandRocks);
             if (world.Manifest.GeneratorVersion >= 47 && biome == BiomeType.Badlands)
                 biome = ChooseExpandedBiome((short)h, (short)t, (ushort)p, i % world.Width, i / world.Width,
                     world.Width, world.Height, world.Manifest.HorizontalWrap, seed);
@@ -86,9 +97,17 @@ public static partial class WorldGenerator
                 if (h <= 30 && t >= 195 && sea && (sheltered || world.RiverEdges[i] != 0) && flat && (p >= 950 || world.RiverEdges[i] != 0) && field > 0.28f) biome = BiomeType.Mangrove;
                 else if ((biome is BiomeType.Desert or BiomeType.Badlands) && fresh && t > 45 && field > 0.3f) biome = BiomeType.Oasis;
                 else if (h <= 260 && t > 55 && IsSwampMargin(world, i)) biome = BiomeType.Swamp;
-                else if (h <= 260 && t is > -55 and <= 55 && fresh && flat && p >= 850 && field > 0.3f) biome = BiomeType.Bog;
+                else if (h <= 260 && t is > -55 and <= 55 && fresh && flat && p + moisture >= 850 && field > 0.3f) biome = BiomeType.Bog;
                 else if (flat && enclosed && !fresh && p < 280 && t > 45 && higher == 6 && field > 0.6f) biome = BiomeType.SaltFlat;
                 else if (p < 350 && eroded && t > -55 && field > 0.48f) biome = BiomeType.Badlands;
+                else if (moisture > 0 && (biome is BiomeType.Desert or BiomeType.Steppe or BiomeType.Shrubland or BiomeType.Grassland or BiomeType.Savanna))
+                {
+                    var dry = ChooseExpandedBiome((short)h, (short)t, (ushort)p, i % world.Width, i / world.Width,
+                        world.Width, world.Height, world.Manifest.HorizontalWrap, seed);
+                    var wet = ChooseExpandedBiome((short)h, (short)t, (ushort)Math.Min(ushort.MaxValue, p + moisture),
+                        i % world.Width, i / world.Width, world.Width, world.Height, world.Manifest.HorizontalWrap, seed);
+                    if (dry != wet) biome = wet;
+                }
                 if (world.RiverEdges[i] != 0 && h >= 600 && p < 1100 && higher >= 2) features |= GeographicFeatures.Canyon;
                 if (biome == BiomeType.Badlands) features |= GeographicFeatures.BadlandRocks;
             }
@@ -139,6 +158,7 @@ public static partial class WorldGenerator
                         : world.Biomes[i];
             }
             var feature = updateFeatures ? Evaluate(i).Features : GeographicFeatures.None;
+            biome = LimitColdDesert(biome, world.Temperature[i], world.Manifest.GeneratorVersion);
             if (updateBiomes && (locks & HexLocks.Biome) == 0) world.Biomes[i] = biome;
             if (updateFeatures && (locks & HexLocks.Features) == 0)
             {

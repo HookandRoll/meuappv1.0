@@ -126,9 +126,10 @@ public static partial class WorldGenerator
         return -1;
     }
 
-    private static void ApplyFluvialBiomes(WorldData world, WorldRegion region, bool updateFeatures = true)
+    private static void ApplyFluvialBiomes(WorldData world, WorldRegion region, bool updateFeatures = true,
+        Func<int, BiomeType>? baseBiome = null)
     {
-        if (world.Manifest.GeneratorVersion >= 46) { ApplyContextBiomes(world, region, updateFeatures); return; }
+        if (world.Manifest.GeneratorVersion >= 46) { ApplyContextBiomes(world, region, updateFeatures, baseBiome: baseBiome); return; }
         bool lakeMargins = world.Manifest.GeneratorVersion >= 20;
         foreach (int cell in region.Cells(world.Width))
         {

@@ -49,14 +49,15 @@ public sealed class GeographicRegions
         return world.Geography;
     }
 
-    public static GeographicRegions Build(WorldData w, GeographicRegions? previous = null)
+    private static (int[] Labels, List<RegionKind> Kinds, List<int> Plates, int West, int East) Classify(WorldData w,
+        WaterType[] water, short[] heights, bool groupIslands)
     {
         int count = w.Count, width = w.Width, height = w.Height;
         var labels = new int[count]; var sizes = new List<int> { 0 };
         var kinds = new List<RegionKind> { RegionKind.Island }; var anchors = new List<int> { 0 };
         var plates = new List<int> { -1 }; var queue = new Queue<int>();
         int Neighbor(int cell, int d) => HexGrid.NeighborIndex(HexGrid.FromOffset(cell % width, cell / width), d, width, height, w.Manifest.HorizontalWrap);
-        int Medium(int cell) => w.Water[cell] == WaterType.None ? 0 : w.Water[cell] == WaterType.Ocean ? 1 : 2;
+        int Medium(int cell) => water[cell] == WaterType.None ? 0 : water[cell] == WaterType.Ocean ? 1 : 2;
         int land = 0, marine = 0;
         for (int start = 0; start < count; start++)
         {
@@ -100,7 +101,7 @@ public sealed class GeographicRegions
                     if (w.Manifest.HorizontalWrap) col = (col + width) % width;
                     if (!w.Domain.Contains(col, row)) continue;
                     int cell = row * width + col;
-                    if (w.Water[cell] != WaterType.Ocean) continue;
+                    if (water[cell] != WaterType.Ocean) continue;
                     float distance = dx * dx + (row - y) * (row - y);
                     if (distance < nearest) { best = cell; nearest = distance; }
                 }
@@ -109,14 +110,14 @@ public sealed class GeographicRegions
         int west = -1, east = -1; float westRank=float.PositiveInfinity, eastRank=float.PositiveInfinity;
         for(int cell=0;cell<count;cell++)
         {
-            if(!w.Domain.Contains(cell) || w.Water[cell]!=WaterType.Ocean)continue;
+            if(!w.Domain.Contains(cell) || water[cell]!=WaterType.Ocean)continue;
             float polar=Math.Abs(cell/width-height*0.5f)*0.10f;
             float a=cell%width+polar,b=width-1-cell%width+polar;
             if(a<westRank){west=cell;westRank=a;}
             if(b<eastRank){east=cell;eastRank=b;}
         }
         if(east==west && marine>1)
-            east=Enumerable.Range(0,count).Last(i=>w.Domain.Contains(i)&&w.Water[i]==WaterType.Ocean&&i!=west);
+            east=Enumerable.Range(0,count).Last(i=>w.Domain.Contains(i)&&water[i]==WaterType.Ocean&&i!=west);
         if(west>=0)seeds[west]=-1;
         if(east>=0)seeds[east]=-1;
         var seededComponents = new HashSet<int>(seeds.Keys.Select(cell => labels[cell]));
@@ -140,8 +141,8 @@ public sealed class GeographicRegions
             for (int d = 0; d < 6; d++)
             {
                 int n = Neighbor(cell, d);
-                if (!w.Domain.Contains(n) || w.Water[n] != WaterType.Ocean || fixedSeeds.Contains(n)) continue;
-                float shelf = Math.Clamp((w.Elevation[n] + 1500f) / 1500f, 0, 1);
+                if (!w.Domain.Contains(n) || water[n] != WaterType.Ocean || fixedSeeds.Contains(n)) continue;
+                float shelf = Math.Clamp((heights[n] + 1500f) / 1500f, 0, 1);
                 float cost = priority.Cost + 1 + shelf * 4;
                 if (cost >= costs[n]) continue;
                 costs[n] = cost; labels[n] = labels[cell]; front.Enqueue(n, (cost, n));
@@ -158,15 +159,15 @@ public sealed class GeographicRegions
         for (int cell = 0; cell < count; cell++)
         {
             int id = labels[cell]; if (id == 0) continue;
-            sizes[id]++; elevation[id] += w.Elevation[cell];sumX[id]+=cell%width;sumY[id]+=cell/width;
-            if (w.Water[cell] != WaterType.Ocean) continue;
+            sizes[id]++; elevation[id] += heights[cell];sumX[id]+=cell%width;sumY[id]+=cell/width;
+            if (water[cell] != WaterType.Ocean) continue;
             bool coast = false;
             for (int d = 0; d < 6; d++)
             {
                 int n = Neighbor(cell, d); if (!w.Domain.Contains(n)) continue;
-                bool mainland=w.Water[n]==WaterType.None && kinds[labels[n]]==RegionKind.Continent;
+                bool mainland=water[n]==WaterType.None && kinds[labels[n]]==RegionKind.Continent;
                 coast |= mainland;if(mainland)continentalBorder[id]++;
-                int other = labels[n]; if (w.Water[n] != WaterType.Ocean || other == id) continue;
+                int other = labels[n]; if (water[n] != WaterType.Ocean || other == id) continue;
                 marineBorder[id]++;
                 if(!openings.TryGetValue(id,out var mouth))openings[id]=mouth=new();mouth.Add(cell);
                 long key = ((long)Math.Min(id, other) << 32) | (uint)Math.Max(id, other);
@@ -185,7 +186,7 @@ public sealed class GeographicRegions
                 int n=HexGrid.NeighborIndex(hex,d,width,height,w.Manifest.HorizontalWrap,step);
                 if(!w.Domain.Contains(n))break;
                 // Islands do not act as continental walls around a sea.
-                if(w.Water[n]==WaterType.None && kinds[labels[n]]==RegionKind.Continent){blocked++;break;}
+                if(water[n]==WaterType.None && kinds[labels[n]]==RegionKind.Continent){blocked++;break;}
             }
             if(blocked<5 || continentalBorder[id]<Math.Max(4,marineBorder[id]*2))return false;
             if(!openings.TryGetValue(id,out var boundary))return true;
@@ -233,6 +234,12 @@ public sealed class GeographicRegions
         }
         for (int id = 1; id < sea.Length; id++) if (sea[id] && Root(id) == id) kinds[id] = RegionKind.Sea;
 
+        if (!groupIslands)
+        {
+            for (int cell = 0; cell < count; cell++) if (labels[cell] != 0) labels[cell] = Root(labels[cell]);
+            return (labels, kinds, plates, west, east);
+        }
+
         // Nearby islands share an archipelago ID, but intervening water keeps
         // its marine ID. Land bridges are never created by classification.
         var islandOwner = new int[count]; var reach = new byte[count];
@@ -246,7 +253,7 @@ public sealed class GeographicRegions
             for (int d = 0; d < 6; d++)
             {
                 int n = Neighbor(cell, d);
-                if (!w.Domain.Contains(n) || (w.Water[n] != WaterType.Ocean && kinds[labels[n]] != RegionKind.Island)) continue;
+                if (!w.Domain.Contains(n) || (water[n] != WaterType.Ocean && kinds[labels[n]] != RegionKind.Island)) continue;
                 if (islandOwner[n] != 0)
                 { int a = Root(islandOwner[cell]), b = Root(islandOwner[n]); if (a != b) parent[Math.Max(a,b)] = Math.Min(a,b); continue; }
                 islandOwner[n] = islandOwner[cell]; reach[n] = (byte)(reach[cell] + 1); queue.Enqueue(n);
@@ -261,6 +268,22 @@ public sealed class GeographicRegions
             if(kinds[id]==RegionKind.Island && sizes[id]>0 && islandArea[roots[id]]<archipelagoMin) parent[id]=id;
         for (int id = 1; id < sizes.Count; id++) if (members[id] > 1 && islandArea[id]>=archipelagoMin) kinds[id] = RegionKind.Archipelago;
         for (int cell = 0; cell < count; cell++) if (labels[cell] != 0) labels[cell] = Root(labels[cell]);
+
+        return (labels, kinds, plates, west, east);
+    }
+
+    internal static RegionKind[] ClassifyClimateSurface(WorldData world, WaterType[] water, short[] heights)
+    {
+        var (labels, kinds, _, _, _) = Classify(world, water, heights, groupIslands: false);
+        var surface = new RegionKind[world.Count];
+        for (int cell = 0; cell < surface.Length; cell++) surface[cell] = kinds[labels[cell]];
+        return surface;
+    }
+
+    public static GeographicRegions Build(WorldData w, GeographicRegions? previous = null)
+    {
+        int count = w.Count, width = w.Width;
+        var (labels, kinds, plates, west, east) = Classify(w, w.Water, w.Elevation, groupIslands: true);
 
         var overlap = new Dictionary<long,int>();
         var old = previous?.Regions.ToDictionary(r => r.Id);
@@ -296,8 +319,8 @@ public sealed class GeographicRegions
             string name = old is not null && old.TryGetValue(stable,out var existing) ? existing.Name : Name(w.Manifest.Seed, stable, kinds[id]);
             if(old is null || !old.ContainsKey(stable))
             {
-                if(west>=0 && id==Root(labels[west]))name+=" Ocidental";
-                else if(east>=0 && id==Root(labels[east]))name+=" Oriental";
+                if(west>=0 && id==labels[west])name+=" Ocidental";
+                else if(east>=0 && id==labels[east])name+=" Oriental";
             }
             if(!names.Add(name)) { name+=$" {stable}";names.Add(name); }
             var kind=kinds[id];

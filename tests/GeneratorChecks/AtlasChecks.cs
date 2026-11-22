@@ -138,7 +138,11 @@ public static partial class WorldGenerator
                 throw new Exception("Full atlas is not deterministic.");
             var original = (BiomeType[])repeated.Biomes.Clone();
             RegenerateRegion(repeated, new(0, 0, 40, 30), RegenerationMode.Everything, HexLocks.Biome);
-            if (!original.SequenceEqual(repeated.Biomes)) throw new Exception("Regenerating the curved edge changed the atlas.");
+            if (!original.SequenceEqual(repeated.Biomes))
+            {
+                int cell = Enumerable.Range(0, original.Length).First(i => original[i] != repeated.Biomes[i]);
+                throw new Exception($"Regenerating the curved edge changed the atlas: seed={seed}, wrap={wrap}, land={landPercent}, continents={continents}, hex={cell % world.Width},{cell / world.Width}, {original[cell]} -> {repeated.Biomes[cell]}.");
+            }
             var region = Create(m with { Generation = m.Generation with { Extent = MapExtent.Region, ReferenceWidth = 0, ReferenceHeight = 0 } });
             if (region.ActiveCount != region.Count) throw new Exception("Region stopped being rectangular.");
             if (world.Water.SequenceEqual(region.Water)) throw new Exception("Atlas is only a visual clip of a regional map.");
