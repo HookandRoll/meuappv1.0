@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.IO;
+using System.IO.Compression;
+using System.Runtime.InteropServices;
 
 namespace Mapmaker.Core;
 
@@ -55,25 +58,47 @@ internal sealed class UndoManager
     private sealed class ChunkSnapshot
     {
         private readonly WorldRegion _region;
-        private readonly Cell[] _cells;
+        private readonly Cell[]? _cells;
+        private readonly byte[]? _compressed;
+        internal bool Compressed => _compressed is not null;
+        internal long Bytes => _compressed?.LongLength ?? (long)_cells!.Length * System.Runtime.CompilerServices.Unsafe.SizeOf<Cell>();
 
-        internal ChunkSnapshot(WorldData world, WorldRegion region)
+        internal ChunkSnapshot(WorldData world, WorldRegion region, bool compress = false)
         {
             _region = region;
-            _cells = new Cell[region.Width * region.Height];
+            var cells = new Cell[region.Width * region.Height];
             int j = 0;
             foreach (int i in region.Cells(world.Width))
-                _cells[j++] = Cell.Read(world, i);
+                cells[j++] = Cell.Read(world, i);
+            if (compress)
+            {
+                using var output = new MemoryStream();
+                using (var stream = new DeflateStream(output, CompressionLevel.Fastest, leaveOpen: true))
+                    stream.Write(MemoryMarshal.AsBytes(cells.AsSpan()));
+                _compressed = output.ToArray();
+            }
+            else _cells = cells;
+        }
+
+        private Cell[] ReadCells()
+        {
+            if (_cells is not null) return _cells;
+            var cells = new Cell[_region.Width * _region.Height];
+            using var input = new MemoryStream(_compressed!);
+            using var stream = new DeflateStream(input, CompressionMode.Decompress);
+            stream.ReadExactly(MemoryMarshal.AsBytes(cells.AsSpan()));
+            return cells;
         }
 
         internal void Restore(WorldData world)
         {
+            var cells = ReadCells();
             int j = 0;
             foreach (int i in _region.Cells(world.Width))
-                _cells[j++].Restore(world, i);
+                cells[j++].Restore(world, i);
         }
 
-        internal bool Matches(ChunkSnapshot other) => _cells.AsSpan().SequenceEqual(other._cells);
+        internal bool Matches(ChunkSnapshot other) => ReadCells().AsSpan().SequenceEqual(other.ReadCells());
     }
 
     private sealed record Command(ChunkSnapshot[] Before, ChunkSnapshot[] After, int Revision, int PreviousRevision, JsonElement SparseBefore, JsonElement SparseAfter);
@@ -112,18 +137,21 @@ internal sealed class UndoManager
 
     internal void Capture(WorldRegion region)
     {
+        bool compress = (long)region.Width * region.Height > _world.Count / 2;
         int size = WorldData.ChunkSize;
         int columns = _world.Chunks.Columns;
         for (int row = region.Row / size; row <= (region.Row + region.Height - 1) / size; row++)
         for (int column = region.Column / size; column <= (region.Column + region.Width - 1) / size; column++)
-            CaptureChunk(row * columns + column);
+            CaptureChunk(row * columns + column, compress);
     }
 
-    private void CaptureChunk(int chunk)
+    internal void CaptureFullWorld() => Capture(new WorldRegion(0, 0, _world.Width, _world.Height));
+
+    private void CaptureChunk(int chunk, bool compress = false)
     {
         _pendingSparse ??= _world.SparseEntities;
         if (!_pending.ContainsKey(chunk))
-            _pending.Add(chunk, new ChunkSnapshot(_world, _world.Chunks.GetChunk(chunk)));
+            _pending.Add(chunk, new ChunkSnapshot(_world, _world.Chunks.GetChunk(chunk), compress));
     }
 
     internal bool Commit()
@@ -132,7 +160,7 @@ internal sealed class UndoManager
         var after = new List<ChunkSnapshot>();
         foreach (var (chunk, snapshot) in _pending)
         {
-            var current = new ChunkSnapshot(_world, _world.Chunks.GetChunk(chunk));
+            var current = new ChunkSnapshot(_world, _world.Chunks.GetChunk(chunk), snapshot.Compressed);
             if (snapshot.Matches(current))
                 continue;
             before.Add(snapshot);
@@ -148,11 +176,11 @@ internal sealed class UndoManager
         int previous = Revision;
         Revision = ++_nextRevision;
         _undo.AddLast(new Command(before.ToArray(), after.ToArray(), Revision, previous, sparseBefore, _world.SparseEntities));
-        int chunkPairs = _undo.Sum(command => command.Before.Length);
-        while (_undo.Count > 1 && (_undo.Count > Limit ||
-            chunkPairs * (2L * WorldData.ChunkSize * WorldData.ChunkSize * System.Runtime.CompilerServices.Unsafe.SizeOf<Cell>()) > SnapshotBudget))
+        static long Bytes(Command command) => command.Before.Sum(snapshot => snapshot.Bytes) + command.After.Sum(snapshot => snapshot.Bytes);
+        long snapshotBytes = _undo.Sum(Bytes);
+        while (_undo.Count > 0 && (_undo.Count > Limit || snapshotBytes > SnapshotBudget))
         {
-            chunkPairs -= _undo.First!.Value.Before.Length;
+            snapshotBytes -= Bytes(_undo.First!.Value);
             _undo.RemoveFirst();
         }
         return true;

@@ -10,7 +10,7 @@ public static partial class WorldGenerator
 {
     internal static void CheckAtlasArchipelagos(bool review = false)
     {
-        foreach (bool wrap in new[] { false, true })
+        foreach (bool wrap in new[] { false })
         {
             var fixture = CheckManifest(128, 64, wrap);
             fixture = fixture with { Generation = fixture.Generation with { Extent = MapExtent.World, Stage = GenerationStage.Land } };
@@ -44,7 +44,7 @@ public static partial class WorldGenerator
         int oldSmall = 0, newSmall = 0, oldLargeArea = 0, newLargeArea = 0, newMedium = 0;
         foreach (int height in new[] { 64, 256, 512 })
         foreach (int seed in new[] { 1234, 1, -77 })
-        foreach (bool wrap in new[] { false, true })
+        foreach (bool wrap in new[] { false })
         {
             if (height == 512 && (wrap || seed == 1)) continue;
             var m = CheckManifest(height * 2, height, wrap) with { Seed = seed };
@@ -74,7 +74,7 @@ public static partial class WorldGenerator
         Console.WriteLine($"ATLAS TOTAL small={oldSmall}->{newSmall}; large island area={oldLargeArea}->{newLargeArea}");
         if (newSmall <= oldSmall || newLargeArea >= oldLargeArea || newMedium == 0)
             throw new Exception("Atlas archipelagos did not improve the size distribution while retaining medium islands.");
-        foreach (bool wrap in new[] { false, true })
+        foreach (bool wrap in new[] { false })
         {
             var m = CheckManifest(128, 64, wrap) with { Generation = CheckManifest(128, 64, wrap).Generation with { Stage = GenerationStage.Land } };
             if (!Create(m).Water.SequenceEqual(Create(m with { GeneratorVersion = 52 }).Water))

@@ -19,6 +19,15 @@ catch (Exception ex)
 
 static void RunChecks(string[] args)
 {
+if (args.Contains("--hadley-climate-only")) { WorldGenerator.CheckHadleyMoisture(); return; }
+WorldGenerator.CheckHadleyMoisture();
+if (args.Contains("--hadley-only")) { WorldGenerator.CheckHadleyWind(); return; }
+if (args.Contains("--hadley-large")) { WorldGenerator.CheckHadleyWind(large: true); return; }
+WorldGenerator.CheckHadleyWind();
+if (args.Contains("--memory-atlas-only")) { WorldGenerator.CheckAtlasUndoMemory(); return; }
+if (args.Contains("--regenerate-atlas-memory")) { WorldGenerator.CheckAtlasRegenerationMemory(); return; }
+WorldGenerator.CheckBugfixes();
+if (args.Contains("--bugfixes-only")) return;
 if (args.Contains("--annual-climate-only")) { WorldGenerator.CheckAnnualClimate(); return; }
 if (args.Contains("--atlas-spacing-only")) { WorldGenerator.CheckAtlasSpacing(args.Contains("--spacing-review")); return; }
 if (args.Contains("--atlas-only")) { WorldGenerator.CheckFullAtlas(); return; }

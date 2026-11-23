@@ -10,7 +10,7 @@ public static partial class WorldGenerator
     internal static void CheckMandatoryPolarPlates()
     {
         foreach (int seed in new[] { 1234, 1, -77 })
-        foreach (bool wrap in new[] { false, true })
+        foreach (bool wrap in new[] { false })
         foreach (int land in new[] { 10, 38, 65 })
         foreach (int version in new[] { 38, 39, 45, Version })
         {

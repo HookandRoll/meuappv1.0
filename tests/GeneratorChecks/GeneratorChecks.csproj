@@ -25,6 +25,10 @@
     <Compile Include="OceanIslandChecks.cs" />
     <Compile Include="AtlasArchipelagoChecks.cs" />
     <Compile Include="AnnualClimateChecks.cs" />
+    <Compile Include="BugfixChecks.cs" />
+    <Compile Include="HadleyWindChecks.cs" />
+    <Compile Include="HadleyMoistureChecks.cs" />
+    <Compile Include="HadleyOrographicChecks.cs" />
   </ItemGroup>
 </Project>
 

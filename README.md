@@ -1,8 +1,8 @@
 # Jota Fantasy Map Maker
 
-**Alpha 1.1.63** · Mapas de fantasia para RPG, com editor de terreno, tectônica, clima e rios no Godot 4 .NET.
+**Alpha 2.0 - Wind and Climate Simulation** · Mapas de fantasia para RPG, com editor de terreno, tectônica, clima e rios no Godot 4 .NET.
 
-Mapas novos usam o **gerador v63**, com clima médio anual. No formulário de terreno completo, a temperatura pode variar em ±5 °C e a precipitação em ±10%. O relevo começa a reter vapor acima de 1.800 m e bloqueia sua passagem pela crista a partir de 2.800 m. Parte da umidade bloqueada volta para o lado de onde veio e se espalha em direção a terrenos mais baixos e secos.
+Mapas novos usam o **gerador v63**, com clima médio anual. No formulário de terreno completo, a temperatura pode variar de −20 a +20 °C e a precipitação de −50 a +50%, em passos de 1. O relevo começa a reter vapor acima de 1.800 m e bloqueia sua passagem pela crista a partir de 2.800 m. Parte da umidade bloqueada volta para o lado de onde veio e se espalha em direção a terrenos mais baixos e secos.
 
 O alcance lateral do vapor é de 2 hexes para cada lado em mapas de até 512 × 256 e chega a 31 hexes no Atlas máximo. Sobre o oceano, a condensação é metade da calculada para o mesmo vapor na v58.
 
@@ -12,7 +12,11 @@ A precipitação anual em terra inclui o equivalente em água da neve. Faixas tr
 
 A camada **Ventos** mostra a direção predominante do transporte de vapor por latitude. Clique em um hex para ver os pesos em cada direção. A partir do Atlas v58, o vapor que sai por uma borda lateral continua na borda oposta, na mesma latitude.
 
-Executável portátil para Windows x64 na [release Alpha 1.1.63](https://github.com/HookandRoll/meuappv1.0/releases/tag/v1.1.63-alpha). Veja [as mudanças desde a Alpha 1.1.54](RELEASE_NOTES_1.1.63.md).
+As camadas **Hadley: solo** e **Hadley: altitude** mostram o [protótipo de circulação em duas camadas](docs/Prototipo_Hadley_Ventos_2D.md), com troca de massa e movimento entre superfície e altitude. O cálculo ocorre em segundo plano, usando uma grade reduzida de até 512×256. Essas camadas ainda não alteram a chuva nem os biomas gerados.
+
+O experimento climático acopla ventos, temperatura, vapor, nuvens e água do solo nas duas camadas. Inclui reposição por tipo de superfície e histórico térmico na subida e descida do relevo. Os comandos diagnósticos e seus limites estão na [documentação Hadley](docs/Prototipo_Hadley_Ventos_2D.md). O clima experimental ainda não substitui o gerador padrão nem tem opção de salvamento no formulário.
+
+Executável portátil para Windows x64 na [release Alpha 2.0](https://github.com/HookandRoll/meuappv1.0/releases/tag/v2.0.0-alpha). Veja [as notas desta versão](RELEASE_NOTES_2.0.0.md). Os relatórios e imagens dos comparativos estão no arquivo de validação anexado à release.
 
 As artes atuais têm três variações por elemento, vegetação isométrica e relevo sobreposto. Veja o [walkthrough visual](docs/Art_Walkthrough_1.1.30.md) e os [créditos das artes](THIRD_PARTY_NOTICES.md).
 
@@ -74,6 +78,11 @@ Após compilar, use o executável de console do Godot .NET. Substitua `godot` pe
 godot --headless --path . -- --smoke-test
 godot --path . -- --benchmark
 godot --path . -- --benchmark-large
+godot --path . -- --verify-editor-bugfixes
+godot --path . -- --benchmark-size=4096 --release-atlas
+dotnet run --project tests/CompatibilityChecks
+dotnet run --project tests/GeneratorChecks -- --memory-atlas-only
+dotnet run --project tests/GeneratorChecks -- --regenerate-atlas-memory
 ```
 
 Acrescente `--continental-sculpt` depois do comando de benchmark para medir a escultura continental e capturar as camadas Terreno e Elevação.
@@ -82,7 +91,11 @@ O teste verifica o estado inicial, a seleção de hexes, as arestas compartilhad
 
 O núcleo em `src/Core` usa C# puro. `src/GodotApp` prepara as texturas e a interface, e o shader desenha terreno, relevo e vegetação com a arte de `tiles`, `relief` e `vegetation`. O `.world` é um ZIP versionado com a configuração de geração, os dados densos e as entidades esparsas. O arquivo é montado em um temporário antes de substituir o save anterior. A especificação na raiz lista os marcos seguintes.
 
-Para exportar o EXE portátil, instale os templates Windows .NET correspondentes ao Godot 4.7.2 e execute `godot --headless --path . --editor --export-release "Windows Desktop"`. O preset gera `dist/Jota-Fantasy-Map-Maker-Alpha-1.1.63.exe`, com PCK e runtime incorporados.
+Ao alterar os arrays `WorldData.Water` ou `WorldData.Elevation` diretamente, chame `InvalidateGeography()` antes de consultar regiões ou salvar. O editor e a regeneração já invalidam esse cache; o salvamento reutiliza a classificação enquanto ela estiver válida. Atlas a partir do gerador v37 exige `HorizontalWrap = false`; mapas regionais continuam aceitando wrap.
+
+`CompatibilityChecks` compara hashes de 48 mundos à implementação anterior às otimizações, incluindo todas as camadas, rios, regiões, ícones e texturas. O teste `--memory-atlas-only` exercita snapshots e undo/redo no tamanho máximo; `--regenerate-atlas-memory` executa duas regenerações completas do Atlas máximo e informa o pico de memória do processo.
+
+Para exportar o EXE portátil, instale os templates Windows .NET correspondentes ao Godot 4.7.2 e execute `godot --headless --path . --editor --export-release "Windows Desktop"`. O preset gera `dist/Jota-Fantasy-Map-Maker-Alpha-2.0-Wind-and-Climate-Simulation.exe`, com PCK e runtime incorporados.
 
 ## Agradecimentos
 

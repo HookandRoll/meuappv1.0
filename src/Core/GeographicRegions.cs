@@ -14,7 +14,13 @@ public sealed class GeographicRegions
     public const int AlgorithmVersion = 2;
     public int Version { get; init; } = AlgorithmVersion;
     public int[] CellIds { get; init; } = Array.Empty<int>();
-    public GeographicRegion[] Regions { get; set; } = Array.Empty<GeographicRegion>();
+    private GeographicRegion[] _regions = Array.Empty<GeographicRegion>();
+    private Dictionary<int, GeographicRegion>? _byId;
+    public GeographicRegion[] Regions
+    {
+        get => _regions;
+        set { _regions = value; _byId = null; }
+    }
     [System.Text.Json.Serialization.JsonIgnore]
     public ulong SourceHash { get; init; }
     internal static ulong SurfaceHash(WorldData world)
@@ -28,8 +34,12 @@ public sealed class GeographicRegions
         RegionKind.Continent => "Continente", RegionKind.Archipelago => "Arquipélago",
         RegionKind.Ocean => "Oceano", RegionKind.Sea => "Mar", RegionKind.Lake => "Lago", _ => "Ilha"
     };
-    public GeographicRegion? At(int cell) => (uint)cell < CellIds.Length
-        ? Array.Find(Regions, r => r.Id == CellIds[cell]) : null;
+    public GeographicRegion? At(int cell)
+    {
+        if ((uint)cell >= CellIds.Length) return null;
+        _byId ??= Regions.ToDictionary(r => r.Id);
+        return _byId.GetValueOrDefault(CellIds[cell]);
+    }
     public void Rename(int id, string name)
     {
         name = name.Trim();
@@ -37,6 +47,7 @@ public sealed class GeographicRegions
         int index = Array.FindIndex(Regions, r => r.Id == id);
         if (index < 0) throw new ArgumentException("Região inexistente.");
         Regions[index] = Regions[index] with { Name = name };
+        if (_byId is not null) _byId[id] = Regions[index];
     }
     public GeographicRegions Copy() => new() { Version = Version, CellIds = CellIds, Regions = (GeographicRegion[])Regions.Clone(), SourceHash=SourceHash };
     public static GeographicRegions Get(WorldData world)
@@ -272,8 +283,20 @@ public sealed class GeographicRegions
         return (labels, kinds, plates, west, east);
     }
 
-    internal static RegionKind[] ClassifyClimateSurface(WorldData world, WaterType[] water, short[] heights)
+    internal static RegionKind[] ClassifyClimateSurface(WorldData world, WaterType[] water, short[] heights, bool cacheGeography = false)
     {
+        if (cacheGeography && ReferenceEquals(water, world.Water) && ReferenceEquals(heights, world.Elevation))
+        {
+            var geography = Get(world);
+            var byId = geography.Regions.ToDictionary(region => region.Id, region => region.Kind);
+            var cachedSurface = new RegionKind[world.Count];
+            for (int cell = 0; cell < cachedSurface.Length; cell++)
+            {
+                var kind = byId.GetValueOrDefault(geography.CellIds[cell], RegionKind.Island);
+                cachedSurface[cell] = kind == RegionKind.Archipelago ? RegionKind.Island : kind;
+            }
+            return cachedSurface;
+        }
         var (labels, kinds, _, _, _) = Classify(world, water, heights, groupIslands: false);
         var surface = new RegionKind[world.Count];
         for (int cell = 0; cell < surface.Length; cell++) surface[cell] = kinds[labels[cell]];
@@ -338,7 +361,9 @@ public sealed class GeographicRegions
             labels[cell]=identities[id];
         }
         var originals=identities.ToDictionary(p=>p.Value,p=>p.Key);
-        for(int i=0;i<records.Count;i++) records[i]=records[i] with { Anchor=bestCell[originals[records[i].Id]] };
+        for(int i=0;i<records.Count;i++)
+            if (originals.TryGetValue(records[i].Id, out int original) && bestCell.TryGetValue(original, out int anchor))
+                records[i]=records[i] with { Anchor=anchor };
         return new() { CellIds=labels, Regions=records.ToArray(), SourceHash=SurfaceHash(w) };
     }
 

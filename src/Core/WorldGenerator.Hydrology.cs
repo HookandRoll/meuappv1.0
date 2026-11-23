@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading.Tasks;
 
 namespace Mapmaker.Core;
 
@@ -174,7 +175,7 @@ public static partial class WorldGenerator
             var own = source.Path.ToHashSet();
             bool Free(int i) => Editable(i) && (!occupancy.TryGetValue(i, out int uses) || uses == 1) &&
                 (!reserved.Contains(i) || own.Contains(i));
-            fixedRivers[j] = RerouteRiver(world, source, Free);
+            fixedRivers[j] = RerouteRiver(world, source, Free, selection);
             foreach (int i in fixedRivers[j].Path) reserved.Add(i);
         }
         var fixedCells = new HashSet<int>(fixedRivers.SelectMany(r => r.Path));
@@ -203,7 +204,7 @@ public static partial class WorldGenerator
         WriteRivers(world, all.ToArray());
     }
 
-    private static RiverRecord RerouteRiver(WorldData world, RiverRecord source, Func<int, bool> editable)
+    private static RiverRecord RerouteRiver(WorldData world, RiverRecord source, Func<int, bool> editable, WorldRegion selection)
     {
         var path = new List<int> { source.Path[0] };
         var tiers = new List<byte>(); var flows = new List<float>();
@@ -224,10 +225,14 @@ public static partial class WorldGenerator
             var queue = new PriorityQueue<int, (float Cost, int Cell)>();
             queue.Enqueue(startCell, (0, startCell));
             var used = path.Take(path.Count - 1).Concat(source.Path.Skip(end + 1)).ToHashSet();
+            int expanded = 0;
+            int maxExpanded = (int)Math.Min(int.MaxValue, Math.Max(4096L, (long)selection.Width * selection.Height * 4));
+            bool reached = false;
             while (queue.TryDequeue(out int cell, out var priority))
             {
                 if (priority.Cost > cost[cell]) continue;
-                if (cell == endCell) break;
+                if (cell == endCell) { reached = true; break; }
+                if (expanded++ >= maxExpanded) break;
                 Hex hex = HexGrid.FromOffset(cell % world.Width, cell / world.Width);
                 for (int direction = 0; direction < 6; direction++)
                 {
@@ -239,12 +244,20 @@ public static partial class WorldGenerator
                 }
             }
             var replacement = new List<int>();
-            if (previous.ContainsKey(endCell))
+            if (reached)
             {
                 for (int cell = endCell; cell != startCell; cell = previous[cell]) replacement.Add(cell);
                 replacement.Reverse();
             }
-            else replacement.AddRange(source.Path.Skip(index + 1).Take(end - index));
+            else
+            {
+                while (index < end)
+                {
+                    tiers.Add(source.Tiers[index]); flows.Add(source.AnnualFlow[index]);
+                    path.Add(source.Path[++index]);
+                }
+                continue;
+            }
             for (int j = 0; j < replacement.Count; j++)
             {
                 float t = replacement.Count == 1 ? 0 : j / (float)(replacement.Count - 1);
@@ -322,6 +335,13 @@ public static partial class WorldGenerator
             // resolves the quantized broad plains without changing editable elevation.
             return (short)Math.Clamp(world.Elevation[cell] + (noise - 0.5f) * 90, short.MinValue, short.MaxValue);
         }
+        var drainageHeight = new short[count];
+        Parallel.For(0, count, cell =>
+        {
+            bool inside = world.Domain.Contains(cell);
+            visited[cell] = !inside;
+            drainageHeight[cell] = inside ? DrainageHeight(cell) : world.Elevation[cell];
+        });
         var queue = new PriorityQueue<int, (short Height, float Distance, uint Tie, int Cell)>();
         void Seed(int cell, short h)
         {
@@ -341,9 +361,9 @@ public static partial class WorldGenerator
                 { queue.Enqueue(i, (0, 0, Tie(i), i)); break; }
             }
         }
-        for (int x = 0; x < world.Width; x++) { Seed(x, DrainageHeight(x)); Seed(count - world.Width + x, DrainageHeight(count - world.Width + x)); }
+        for (int x = 0; x < world.Width; x++) { Seed(x, drainageHeight[x]); Seed(count - world.Width + x, drainageHeight[count - world.Width + x]); }
         if (!world.Manifest.HorizontalWrap)
-            for (int y = 0; y < world.Height; y++) { Seed(y * world.Width, DrainageHeight(y * world.Width)); Seed(y * world.Width + world.Width - 1, DrainageHeight(y * world.Width + world.Width - 1)); }
+            for (int y = 0; y < world.Height; y++) { Seed(y * world.Width, drainageHeight[y * world.Width]); Seed(y * world.Width + world.Width - 1, drainageHeight[y * world.Width + world.Width - 1]); }
         while (queue.TryDequeue(out int cell, out var priority))
         {
             order.Add(cell);
@@ -353,7 +373,7 @@ public static partial class WorldGenerator
                 int n = HexGrid.NeighborIndex(hex, d, world.Width, world.Height, world.Manifest.HorizontalWrap);
                 if (n < 0 || visited[n]) continue;
                 visited[n] = true; parent[n] = cell;
-                level[n] = (short)Math.Max(priority.Height, DrainageHeight(n));
+                level[n] = (short)Math.Max(priority.Height, drainageHeight[n]);
                 queue.Enqueue(n, (level[n], priority.Distance + RoutingCost(n), Tie(n), n));
             }
         }
@@ -374,8 +394,8 @@ public static partial class WorldGenerator
                     if (n < 0 || (level[n] > level[cell]) ||
                         (level[n] == level[cell] && floodRank[n] >= floodRank[cell])) continue;
                     if (level[n] < level[best] || (level[n] == level[best] &&
-                        (DrainageHeight(n) < DrainageHeight(best) ||
-                        (DrainageHeight(n) == DrainageHeight(best) && Tie(n) < Tie(best))))) best = n;
+                        (drainageHeight[n] < drainageHeight[best] ||
+                        (drainageHeight[n] == drainageHeight[best] && Tie(n) < Tie(best))))) best = n;
                 }
                 parent[cell] = best;
             }

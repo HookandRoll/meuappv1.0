@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using Mapmaker.Core;
 
 namespace Mapmaker.GodotApp;
@@ -31,27 +32,46 @@ internal static class MapDetailIcons
         var icons = new uint[world.Count];
         const int spacing = 7;
         bool hasDepth = world.Manifest.Generation.Stage >= GenerationStage.Relief;
-        var above = new Icon[(world.Width + spacing - 1) / spacing];
+        int columns = (world.Width + spacing - 1) / spacing;
+        int rows = (world.Height + spacing - 1) / spacing;
+        var primaryCells = new int[rows * columns];
+        var closeCells = new int[primaryCells.Length];
+        Array.Fill(primaryCells, -1);
+        Array.Fill(closeCells, -1);
+        Parallel.For(0, rows, blockRow =>
+        {
+            int top = blockRow * spacing, bottom = Math.Min(top + spacing, world.Height);
+            for (int block = 0; block < columns; block++)
+            {
+                int start = block * spacing, end = Math.Min(start + spacing, world.Width);
+                uint choice = Rank(top * world.Width + start, world.Manifest.Seed);
+                if (choice % 6 == 0) continue;
+                int index = blockRow * columns + block;
+                int primary = PickCell(world, terrain, start, top, end, bottom, choice, hasDepth);
+                primaryCells[index] = primary;
+                closeCells[index] = PickCell(world, terrain, start, top, end, bottom, choice, hasDepth, true, primary);
+            }
+        });
+        // Icon choices depend on the selected left/above icons, so resolve them in scan order.
+        var above = new Icon[columns];
         for (int top = 0; top < world.Height; top += spacing)
         {
             Icon left = Icon.None;
-            int bottom = Math.Min(top + spacing, world.Height);
             for (int start = 0; start < world.Width; start += spacing)
             {
                 int block = start / spacing;
                 uint choice = Rank(top * world.Width + start, world.Manifest.Seed);
-                int end = Math.Min(start + spacing, world.Width);
                 Icon selected = Icon.None;
                 if (choice % 6 != 0)
                 {
-                    int primary = PickCell(world, terrain, start, top, end, bottom, choice, hasDepth);
+                    int primary = primaryCells[top / spacing * columns + block];
                     if (primary >= 0)
                     {
                         selected = PickIcon(world, primary, left, above[block]);
                         icons[primary] = (uint)selected;
                     }
 
-                    int close = PickCell(world, terrain, start, top, end, bottom, choice, hasDepth, true, primary);
+                    int close = closeCells[top / spacing * columns + block];
                     if (close >= 0)
                         icons[close] = (uint)PickIcon(world, close, selected, above[block]) | CloseZoomFlag;
                 }

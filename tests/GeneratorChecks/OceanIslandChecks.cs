@@ -117,7 +117,7 @@ public static partial class WorldGenerator
         bool rejectedLegacy = false; int addedSmall = 0, addedSingles = 0;
         foreach(int height in new[]{64,256})foreach(int seed in new[]{1234,1,-77})foreach(bool wrap in new[]{false,true})
         {
-            var m=CheckManifest(height*2,height,wrap) with{Seed=seed};m=m with{Generation=m.Generation with{Stage=GenerationStage.Land,Extent=MapExtent.World}};
+            var m=CheckManifest(height*2,height,wrap) with{Seed=seed};m=m with{HorizontalWrap=false,Generation=m.Generation with{Stage=GenerationStage.Land,Extent=MapExtent.World}};
             var old=Create(m with{GeneratorVersion=50});var current=Create(m with{GeneratorVersion=52});
             var a=Stats(old);var b=Stats(current);
             Preserve(old, current);
@@ -147,7 +147,7 @@ public static partial class WorldGenerator
         if (addedSmall == 0 || addedSingles == 0) throw new Exception("The sample has no added small islands or companion islets.");
         foreach (int percent in new[]{0,5,35,100})
         {
-            var m=CheckManifest(128,64,true);m=m with{Generation=m.Generation with{Stage=GenerationStage.Land,LandPercent=percent,Extent=MapExtent.World}};
+            var m=CheckManifest(128,64,false);m=m with{Generation=m.Generation with{Stage=GenerationStage.Land,LandPercent=percent,Extent=MapExtent.World}};
             Preserve(Create(m with{GeneratorVersion=50}),Create(m with{GeneratorVersion=52}));
         }
         Console.WriteLine("PASS island preservation, size diversity, exact quota, bounded coast edits, determinism, slider extremes; v51 rejected");

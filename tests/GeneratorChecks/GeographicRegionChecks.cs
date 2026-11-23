@@ -37,8 +37,8 @@ public static partial class WorldGenerator
             string path=Path.Combine(Path.GetTempPath(),$"regions-{Guid.NewGuid():N}.world");
             try
             {
-                // Save detects direct geometry edits even outside the editor.
                 w.Water[10*96+10]=WaterType.Lake;
+                w.InvalidateGeography();
                 WorldFile.Save(path,w,null);var loaded=WorldFile.Load(path);
                 if(!w.Geography.CellIds.SequenceEqual(loaded.Geography!.CellIds)||!w.Geography.Regions.SequenceEqual(loaded.Geography.Regions))throw new Exception("Region save/load lost names or IDs.");
                 using(var archive=ZipFile.Open(path,ZipArchiveMode.Update))
@@ -56,7 +56,7 @@ public static partial class WorldGenerator
         }
         foreach(int seed in new[]{1234,1,-77})
         {
-            var size=MapDomain.ExpandedSize(256,128);var m=CheckManifest(size.Width,size.Height,true) with{Seed=seed};
+            var size=MapDomain.ExpandedSize(256,128);var m=CheckManifest(size.Width,size.Height,false) with{Seed=seed};
             m=m with{Generation=m.Generation with{Extent=MapExtent.World,ReferenceWidth=256,ReferenceHeight=128}};
             var w=Create(m);var g=GeographicRegions.Get(w);
             if(g.Regions.Sum(r=>r.Cells)!=w.ActiveCount)throw new Exception("Regions did not partition atlas exactly.");

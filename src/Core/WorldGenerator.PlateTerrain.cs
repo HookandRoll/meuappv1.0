@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Threading.Tasks;
 
 namespace Mapmaker.Core;
 
@@ -51,15 +52,39 @@ public static partial class WorldGenerator
                 _scores[i] = crust + regional + coast * (0.35f + _coastDetail * 0.9f);
             }, progress, GenerationStep.Land, 0, 40);
 
-            int done = 0;
+            var active = new List<(PlateContact Contact, int Top, int Bottom)>();
             foreach (PlateContact contact in tectonics.Contacts)
             {
                 if (Math.Abs(contact.Compression) < 0.25f && contact.Shear < 0.8f) continue;
+                var pa = tectonics.Plates[contact.A];
+                var pb = tectonics.Plates[contact.B];
+                float micro = Math.Min(pa.Size, pb.Size) < 0.6f ? 0.7f : 1f;
+                float belt = Math.Max(HexGrid.Root3 * 1.7f, spacing * 0.055f * micro);
+                float arcOffset = Math.Max(HexGrid.Root3 * 2.2f, spacing * 0.055f);
+                float arcWidth = Math.Max(HexGrid.Root3 * 1.2f, spacing * 0.026f * micro);
+                if (_manifest.GeneratorVersion >= 53 && _domain.IsAtlas && !(pa.Continental && pb.Continental))
+                    arcWidth = Math.Min(arcWidth, HexGrid.Root3 * 2.4f);
+                float reach = Math.Max(belt * 2.8f, arcOffset + arcWidth * 2.8f);
+                int top = Math.Max(0, (int)MathF.Floor((Math.Min(contact.Y, contact.EndY) - reach) / 1.5f));
+                int bottom = Math.Min(_height - 1, (int)MathF.Ceiling((Math.Max(contact.Y, contact.EndY) + reach) / 1.5f));
+                active.Add((contact, top, bottom));
+            }
+            Parallel.For(0, (_height + 31) / 32, block =>
+            {
+                int rowStart = block * 32, rowEnd = Math.Min(_height, rowStart + 32);
+                foreach (var entry in active)
+                    if (entry.Top < rowEnd && entry.Bottom >= rowStart)
+                        ApplyContact(entry.Contact, rowStart, rowEnd);
+            });
+            progress?.Invoke(new(GenerationStep.Land, 70));
+
+            void ApplyContact(PlateContact contact, int rowStart, int rowEnd)
+            {
                 var a = new Vector2(contact.X, contact.Y);
                 var b = new Vector2(contact.EndX, contact.EndY);
                 Vector2 segment = b - a;
                 float lengthSquared = segment.LengthSquared();
-                if (lengthSquared < 0.00001f) continue;
+                if (lengthSquared < 0.00001f) return;
                 Vector2 normal = tectonics.ContactNormal(_manifest, contact);
                 var pa = tectonics.Plates[contact.A];
                 var pb = tectonics.Plates[contact.B];
@@ -76,7 +101,7 @@ public static partial class WorldGenerator
                 float reach = Math.Max(belt * 2.8f, arcOffset + arcWidth * 2.8f);
                 int top = Math.Max(0, (int)MathF.Floor((Math.Min(a.Y, b.Y) - reach) / 1.5f));
                 int bottom = Math.Min(_height - 1, (int)MathF.Ceiling((Math.Max(a.Y, b.Y) + reach) / 1.5f));
-                for (int row = top; row <= bottom; row++)
+                for (int row = Math.Max(top, rowStart); row <= Math.Min(bottom, rowEnd - 1); row++)
                 {
                     float offset = (row & 1) * 0.5f;
                     int left = (int)MathF.Floor((Math.Min(a.X, b.X) - reach) / HexGrid.Root3 - offset);
@@ -117,9 +142,9 @@ public static partial class WorldGenerator
                                 // A finite arc strip on the overriding side, broken
                                 // into islands by a seeded along-boundary signal.
                                 float endFade = Band(MathF.Sqrt(Math.Max(0, delta.LengthSquared() - signed * signed)), arcWidth * 1.6f);
-                                float pulse = Smooth(Math.Clamp((FieldNoise(col, row, 19f, _seed ^ 0xC7159A43u) - 0.40f) / 0.40f, 0, 1));
-                                if (atlasArc) pulse = AtlasIslandConstruction(col, row, pulse);
                                 float arc = Band(signed - arcOffset, arcWidth) * endFade;
+                                float pulse = arc == 0 ? 0 : Smooth(Math.Clamp((FieldNoise(col, row, 19f, _seed ^ 0xC7159A43u) - 0.40f) / 0.40f, 0, 1));
+                                if (atlasArc && arc != 0) pulse = AtlasIslandConstruction(col, row, pulse);
                                 // Volcanic construction can expose parts of an arc even
                                 // at moderate convergence; pressure still controls relief.
                                 arcs[i] = Math.Max(arcs[i], MathF.Sqrt(strength) * arc * pulse);
@@ -139,8 +164,6 @@ public static partial class WorldGenerator
                         }
                     }
                 }
-                if (++done % 64 == 0)
-                    progress?.Invoke(new(GenerationStep.Land, 40 + done * 30 / Math.Max(1, tectonics.Contacts.Length)));
             }
             VisitChunks(_chunks, (i, _, _) =>
             {

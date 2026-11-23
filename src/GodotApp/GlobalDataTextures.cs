@@ -39,15 +39,18 @@ internal sealed class GlobalDataTextures : IDisposable
         byte[] surface = new byte[terrain.Length], geography = new byte[terrain.Length], climate = new byte[terrain.Length];
         bool hasFeatures = Array.Exists(world.Features, feature => feature != GeographicFeatures.None);
         byte[]? featureLow = hasFeatures ? new byte[terrain.Length] : null, featureHigh = hasFeatures ? new byte[terrain.Length] : null;
-        Span<byte> unusedLow = stackalloc byte[4], unusedHigh = stackalloc byte[4];
-        for (int cell = 0; cell < world.Count; cell++)
+        Parallel.For(0, world.Height, row =>
         {
-            int index = cell * 4;
-            MapRenderFormat.WriteHex(world, cell, terrain.AsSpan(index, 4), surface.AsSpan(index, 4), geography.AsSpan(index, 4),
-                featureLow is null ? unusedLow : featureLow.AsSpan(index, 4), featureHigh is null ? unusedHigh : featureHigh.AsSpan(index, 4));
-            Pack(climate, index, (ushort)(world.Temperature[cell] - short.MinValue));
-            Pack(climate, index + 2, world.Rainfall[cell]);
-        }
+            Span<byte> unusedLow = stackalloc byte[4], unusedHigh = stackalloc byte[4];
+            for (int cell = row * world.Width; cell < (row + 1) * world.Width; cell++)
+            {
+                int index = cell * 4;
+                MapRenderFormat.WriteHex(world, cell, terrain.AsSpan(index, 4), surface.AsSpan(index, 4), geography.AsSpan(index, 4),
+                    featureLow is null ? unusedLow : featureLow.AsSpan(index, 4), featureHigh is null ? unusedHigh : featureHigh.AsSpan(index, 4));
+                Pack(climate, index, (ushort)(world.Temperature[cell] - short.MinValue));
+                Pack(climate, index + 2, world.Rainfall[cell]);
+            }
+        });
         if (world.Manifest.Generation.Stage >= GenerationStage.Relief)
             MarkReliefSymbols(world, surface);
         if (world.Manifest.Generation.Stage == GenerationStage.Terrain)
@@ -61,28 +64,31 @@ internal sealed class GlobalDataTextures : IDisposable
     {
         // Shore metadata has its own byte; no biome ID bits are overwritten.
         // Derive the visual shoreline from water so it crosses the edge of an edit without writing to adjacent hexes.
-        for (int index = 0; index < world.Count; index++)
+        Parallel.For(0, world.Height, row =>
         {
-            if (world.Water[index] != WaterType.None)
-                continue;
-
-            Hex hex = HexGrid.FromOffset(index % world.Width, index / world.Width);
-            int landNeighbors = 0;
-            bool coast = false;
-            for (int direction = 0; direction < 6; direction++)
+            for (int index = row * world.Width; index < (row + 1) * world.Width; index++)
             {
-                int neighbor = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, world.Manifest.HorizontalWrap);
-                if (neighbor < 0 || world.Water[neighbor] == WaterType.None)
-                    landNeighbors++;
-                else if (world.Water[neighbor] == WaterType.Ocean)
+                var water = world.Water[index];
+                if (water is not (WaterType.None or WaterType.Ocean)) continue;
+                Hex hex = HexGrid.FromOffset(index % world.Width, row);
+                int landNeighbors = 0;
+                bool coast = false, adjacentLand = false;
+                for (int direction = 0; direction < 6; direction++)
                 {
-                    coast = true;
-                    MarkOceanCrowding(world, terrain, neighbor);
+                    int neighbor = HexGrid.NeighborIndex(hex, direction, world.Width, world.Height, world.Manifest.HorizontalWrap);
+                    if (neighbor < 0 || world.Water[neighbor] == WaterType.None) landNeighbors++;
+                    if (neighbor >= 0)
+                    {
+                        adjacentLand |= world.Water[neighbor] == WaterType.None;
+                        coast |= world.Water[neighbor] == WaterType.Ocean;
+                    }
                 }
+                if (water == WaterType.None && coast)
+                    terrain[index * 4 + 2] |= (byte)ShoreCrowding(landNeighbors);
+                else if (water == WaterType.Ocean && adjacentLand)
+                    MarkOceanCrowding(world, terrain, index);
             }
-            if (coast)
-                terrain[index * 4 + 2] |= (byte)ShoreCrowding(landNeighbors);
-        }
+        });
     }
 
     private static void MarkOceanCrowding(WorldData world, byte[] terrain, int index)
@@ -141,20 +147,23 @@ internal sealed class GlobalDataTextures : IDisposable
 
     private static void MarkReliefSymbols(WorldData world, byte[] terrain)
     {
-        for (int cell = 0; cell < world.Count; cell++)
+        Parallel.For(0, world.Height, row =>
         {
-            byte symbols = ReliefContours.Symbol(world, cell);
-            var features = world.Features[cell];
-            if (world.Water[cell] == WaterType.None && (features & GeographicFeatures.Volcano) != 0) symbols = MapRenderFormat.ReliefSymbol | MapRenderFormat.MassifSymbol | 1;
-            else if ((features & GeographicFeatures.Canyon) != 0 && StableRank(cell) % 3 == 0) symbols = MapRenderFormat.ReliefSymbol | MapRenderFormat.MassifSymbol | 2;
-            else if ((features & GeographicFeatures.BadlandRocks) != 0 && symbols == 0 && StableRank(cell) % 7 == 0) symbols = MapRenderFormat.ReliefSymbol | MapRenderFormat.MassifSymbol | 3;
-            terrain[cell * 4 + 3] |= symbols;
-            if ((symbols & MapRenderFormat.MassifSymbol) == 0) continue;
-            ReliefType visual = ReliefContours.VisualRelief(world, cell);
-            Pack(terrain, cell * 4 + 1, (ushort)visual);
-            if (world.Elevation[cell] >= 3200 && (world.Temperature[cell] <= 0 || world.Biomes[cell] == BiomeType.Alpine))
-                terrain[cell * 4 + 3] |= MapRenderFormat.Snow;
-        }
+            for (int cell = row * world.Width; cell < (row + 1) * world.Width; cell++)
+            {
+                byte symbols = ReliefContours.Symbol(world, cell);
+                var features = world.Features[cell];
+                if (world.Water[cell] == WaterType.None && (features & GeographicFeatures.Volcano) != 0) symbols = MapRenderFormat.ReliefSymbol | MapRenderFormat.MassifSymbol | 1;
+                else if ((features & GeographicFeatures.Canyon) != 0 && StableRank(cell) % 3 == 0) symbols = MapRenderFormat.ReliefSymbol | MapRenderFormat.MassifSymbol | 2;
+                else if ((features & GeographicFeatures.BadlandRocks) != 0 && symbols == 0 && StableRank(cell) % 7 == 0) symbols = MapRenderFormat.ReliefSymbol | MapRenderFormat.MassifSymbol | 3;
+                terrain[cell * 4 + 3] |= symbols;
+                if ((symbols & MapRenderFormat.MassifSymbol) == 0) continue;
+                ReliefType visual = ReliefContours.VisualRelief(world, cell);
+                Pack(terrain, cell * 4 + 1, (ushort)visual);
+                if (world.Elevation[cell] >= 3200 && (world.Temperature[cell] <= 0 || world.Biomes[cell] == BiomeType.Alpine))
+                    terrain[cell * 4 + 3] |= MapRenderFormat.Snow;
+            }
+        });
     }
 
     private static void MarkVegetationSymbols(WorldData world, byte[] terrain)

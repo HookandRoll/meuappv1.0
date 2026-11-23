@@ -183,7 +183,7 @@ public static partial class WorldGenerator
         foreach (bool wrap in new[] { false, true })
         {
             var m = CheckManifest(128, 64, wrap);
-            m = m with { Generation = m.Generation with { Extent = MapExtent.World } };
+            m = m with { HorizontalWrap = false, Generation = m.Generation with { Extent = MapExtent.World } };
             var standard = Create(m);
             var previous = Create(m with { GeneratorVersion = 61 });
             var spread = Create(m with { GeneratorVersion = 62 });

@@ -42,7 +42,6 @@ public static class WorldFile
                     WriteLayers(archive, world);
                     if (world.Manifest.Generation.Stage != GenerationStage.Blank)
                     {
-                        if(world.Geography is not null && world.Geography.SourceHash!=GeographicRegions.SurfaceHash(world))world.GeographyDirty=true;
                         var geography = GeographicRegions.Get(world);
                         using(var regions=archive.CreateEntry("geography.json").Open())
                             JsonSerializer.Serialize(regions,new { geography.Version, geography.Regions },JsonOptions);

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections;
 using System.Linq;
 
 namespace Mapmaker.Core;
@@ -64,11 +65,36 @@ public static partial class WorldGenerator
                     int n = Neighbor(HexAt(cell), d);
                     return n >= 0 && water[n] != WaterType.None;
                 });
-            var candidates = Enumerable.Range(0, water.Length)
-                .Where(i => distance[i] is >= 3 and <= 9 && marine[i] == WaterType.Ocean &&
-                    (sizes[nearest[i]] < mainlandMin || uplift[i] >= 0.12f || _scores[i] > sea - 0.20f))
-                .OrderByDescending(i => uplift[i] + (sizes[nearest[i]] < mainlandMin ? 0.3f : 0) + (Rank(i) & 255) * 0.001f)
-                .ThenBy(i => i);
+            IEnumerable<int> Candidates()
+            {
+                int capacity = Math.Max(2048, maxGroups * 16);
+                var eligible = new BitArray(water.Length);
+                for (int i = 0; i < water.Length; i++)
+                    eligible[i] = distance[i] is >= 3 and <= 9 && marine[i] == WaterType.Ocean &&
+                        (sizes[nearest[i]] < mainlandMin || uplift[i] >= 0.12f || _scores[i] > sea - 0.20f);
+                (float Rank, int NegCell)? ceiling = null;
+                while (true)
+                {
+                    var best = new PriorityQueue<int, (float Rank, int NegCell)>();
+                    for (int i = 0; i < water.Length; i++)
+                    {
+                        if (!eligible[i]) continue;
+                        var key = (uplift[i] + (sizes[nearest[i]] < mainlandMin ? 0.3f : 0) + (Rank(i) & 255) * 0.001f, -i);
+                        if (ceiling.HasValue && key.CompareTo(ceiling.Value) >= 0) continue;
+                        if (best.Count < capacity) best.Enqueue(i, key);
+                        else best.EnqueueDequeue(i, key);
+                    }
+                    if (best.Count == 0) yield break;
+                    // Refill below the last rank if rejected patches exhaust this batch.
+                    // A fixed Top-K would silently drop later viable island centers.
+                    foreach (var item in best.UnorderedItems.OrderByDescending(item => item.Priority))
+                    {
+                        ceiling = item.Priority;
+                        yield return item.Element;
+                    }
+                }
+            }
+            var candidates = Candidates();
             var centers = new List<int>();
             var eroded = new int[sizes.Count];
             int radius = Math.Clamp(_height / 16, 16, 32);

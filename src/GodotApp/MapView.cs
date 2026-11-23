@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using Godot;
 using Mapmaker.Core;
 
@@ -7,8 +9,11 @@ namespace Mapmaker.GodotApp;
 public partial class MapView : Node2D
 {
     private const int WindLayer = 8;
+    private const int HadleyLayer = 9;
+    private const int HadleyUpperLayer = 10;
+    private static bool IsHadleyLayer(int layer) => layer is HadleyLayer or HadleyUpperLayer;
     private static readonly string[] Layers =
-        { "Terreno", "Elevação", "Temperatura", "Chuva", "Biomas", "Locks", "Tectônica", "Regiões", "Ventos" };
+        { "Terreno", "Elevação", "Temperatura", "Chuva", "Biomas", "Locks", "Tectônica", "Regiões", "Ventos", "Hadley: solo", "Hadley: altitude" };
     private static readonly Color Ink = new("#ebe2cc");
     private static readonly Color Muted = new("#a89b84");
     private Node2D _map = null!;
@@ -27,6 +32,12 @@ public partial class MapView : Node2D
     private int _layer;
     private TectonicOverlay _tectonicOverlay = null!;
     private WindOverlay _windOverlay = null!;
+    private HadleyWindOverlay _hadleyOverlay = null!;
+    private HadleyWindField? _hadleyWind;
+    private WorldData? _hadleyWorld;
+    private CancellationTokenSource? _hadleyCancellation;
+    private string? _hadleyError;
+    private bool _hadleyClosed;
     private RiverOverlay _riverOverlay = null!;
     private VolcanoOverlay _volcanoOverlay = null!;
     private bool _showVolcanoes = true;
@@ -49,6 +60,8 @@ public partial class MapView : Node2D
         _map.AddChild(_tectonicOverlay);
         _windOverlay = new WindOverlay { Visible = false };
         _map.AddChild(_windOverlay);
+        _hadleyOverlay = new HadleyWindOverlay { Visible = false };
+        _map.AddChild(_hadleyOverlay);
         _regionLabels=new RegionLabels { Visible=false };_map.AddChild(_regionLabels);
         BuildInterface();
         GetViewport().SizeChanged += FitMap;
@@ -56,7 +69,19 @@ public partial class MapView : Node2D
 
         string[] args = OS.GetCmdlineUserArgs();
         string? benchmarkSize = Array.Find(args, arg => arg.StartsWith("--benchmark-size="));
-        if (Array.IndexOf(args, "--wind-review") >= 0)
+        if (Array.IndexOf(args, "--hadley-orographic-comparison") >= 0)
+            Callable.From(() => RunHadleyReplenishmentComparison(orographic: true)).CallDeferred();
+        else if (Array.IndexOf(args, "--hadley-replenishment-comparison") >= 0)
+            Callable.From(() => RunHadleyReplenishmentComparison()).CallDeferred();
+        else if (Array.IndexOf(args, "--hadley-climate-comparison") >= 0)
+            Callable.From(RunHadleyClimateComparison).CallDeferred();
+        else if (Array.IndexOf(args, "--hadley-seed-comparison") >= 0)
+            Callable.From(RunHadleySeedComparison).CallDeferred();
+        else if (Array.IndexOf(args, "--hadley-review") >= 0)
+            Callable.From(RunHadleyReview).CallDeferred();
+        else if (Array.IndexOf(args, "--verify-editor-bugfixes") >= 0)
+            Callable.From(VerifyEditorBugfixes).CallDeferred();
+        else if (Array.IndexOf(args, "--wind-review") >= 0)
             Callable.From(RunWindReview).CallDeferred();
         else if (Array.IndexOf(args, "--annual-climate-review") >= 0)
             Callable.From(RunAnnualClimateReview).CallDeferred();
@@ -128,6 +153,8 @@ public partial class MapView : Node2D
 
     public override void _ExitTree()
     {
+        _hadleyClosed = true;
+        _hadleyCancellation?.Cancel();
         GetViewport().SizeChanged -= FitMap;
         _editorPreview?.Dispose();
         _lockTexture?.Dispose();
@@ -234,8 +261,16 @@ public partial class MapView : Node2D
         _world = world;
         _windOverlay.Domain = world.Domain;
         _windOverlay.QueueRedraw();
+        InvalidateHadleyWind();
+        _hadleyOverlay.Domain = world.Domain;
         _layerSelect.SetItemDisabled(WindLayer, stage < GenerationStage.Terrain || world.Manifest.GeneratorVersion < 55);
         _layerSelect.SetItemTooltip(WindLayer, "Direção predominante do vento médio anual. Clique em um hex para ver os pesos.");
+        _layerSelect.SetItemDisabled(HadleyLayer, stage < GenerationStage.Relief);
+        _layerSelect.SetItemDisabled(HadleyUpperLayer, stage < GenerationStage.Relief);
+        _layerSelect.SetItemTooltip(HadleyLayer, "Vento próximo ao solo, com atrito e interação com o relevo.");
+        _layerSelect.SetItemTooltip(HadleyUpperLayer, "Vento em altitude, acoplado à superfície por subida e descida de ar.");
+        if (IsHadleyLayer(_layer))
+            RefreshHadleyWind();
         _regionLabels.World=world;
         _layerSelect.SetItemDisabled(7,stage==GenerationStage.Blank);
         if(_layer==7)RefreshRegions();
@@ -331,6 +366,31 @@ public partial class MapView : Node2D
                 var (eastward, southward) = AnnualWind.DirectionWeights(offset.Y, world.Height);
                 _inspection.Text = $"Hex {offset.X}, {offset.Y}  ·  Leste {eastward:P0} / Oeste {1 - eastward:P0}  ·  Norte {1 - southward:P0} / Sul {southward:P0}  ·  {edges}";
                 _inspection.TooltipText = "Pesos por eixo. O transporte combina 72% ao longo da latitude e 28% entre latitudes.";
+            }
+            return;
+        }
+        if (IsHadleyLayer(_layer))
+        {
+            RefreshHadleyWind();
+            if (offset.X < 0 || _hadleyWind is null)
+            {
+                _inspection.Text = _hadleyError is not null ? "Não foi possível calcular a circulação Hadley."
+                    : _hadleyWind is null ? "Calculando circulação Hadley em duas camadas…"
+                    : "Hadley: laranja = ar subindo; azul = ar descendo. Clique em um hex para inspecionar.";
+                _inspection.TooltipText = _hadleyError ?? "Camadas de superfície e altitude com transferência de massa e movimento.";
+            }
+            else
+            {
+                var atmosphere = _layer == HadleyUpperLayer ? HadleyAtmosphereLayer.Upper : HadleyAtmosphereLayer.Surface;
+                HadleyWindSample s = _hadleyWind.Sample(offset.X, offset.Y, atmosphere);
+                string vertical = s.VerticalFlow > 0.005f ? "Subindo" : s.VerticalFlow < -0.005f ? "Descendo" : "Neutro";
+                string compass = WindCompass(s.Vx, s.Vy);
+                string layerName = atmosphere == HadleyAtmosphereLayer.Upper ? "Altitude" : "Solo";
+                _inspection.Text = $"Hex {offset.X}, {offset.Y}  ·  {layerName} {compass} (vel {s.Speed:0.00})  ·  Vertical: {vertical} ({s.VerticalFlow:+0.00;-0.00;0.00})  ·  Pressão {s.Pressure:+0.00;-0.00;0.00}  ·  Turbulência {MathF.Abs(s.Vorticity):0.00}";
+                var other = _hadleyWind.Sample(offset.X, offset.Y, atmosphere == HadleyAtmosphereLayer.Upper
+                    ? HadleyAtmosphereLayer.Surface : HadleyAtmosphereLayer.Upper);
+                _inspection.TooltipText = $"Grade {_hadleyWind.GridWidth}×{_hadleyWind.GridHeight} ({_hadleyWind.Settings.Iterations} iterações). "
+                    + $"Outra camada: {WindCompass(other.Vx, other.Vy)}, velocidade {other.Speed:0.00}. Valores em unidades normalizadas do protótipo.";
             }
             return;
         }
@@ -432,22 +492,95 @@ public partial class MapView : Node2D
 
     private void SetLayer(int index)
     {
-        bool refreshWindInspection = _layer == WindLayer || index == WindLayer;
+        bool refreshWindInspection = _layer == WindLayer || index == WindLayer || IsHadleyLayer(_layer) || IsHadleyLayer(index);
         _layer = index;
         _layerSelect.Select(index);
         _regionLabels.Visible=index==7;
         if(index==7)RefreshRegions();
-        _material.SetShaderParameter("layer", index == 6 ? 0 : index);
+        _material.SetShaderParameter("layer", IsHadleyLayer(index) ? WindLayer : index == 6 ? 0 : index);
         _tectonicOverlay.Visible = index == 6;
         _windOverlay.Visible = index == WindLayer;
         if (_windOverlay.Visible)
             _windOverlay.QueueRedraw();
+        _hadleyOverlay.Visible = IsHadleyLayer(index);
+        _hadleyOverlay.Layer = index == HadleyUpperLayer ? HadleyAtmosphereLayer.Upper : HadleyAtmosphereLayer.Surface;
+        _hadleyOverlay.QueueRedraw();
+        if (_hadleyOverlay.Visible)
+            RefreshHadleyWind();
         _riverOverlay.Visible = index == 0 || index == 6;
         _volcanoOverlay.Visible = _showVolcanoes && (index == 0 || index == 6);
         if (!_busy)
             RefreshEditorClimate();
         if (refreshWindInspection)
             RefreshInspection();
+    }
+
+    private void InvalidateHadleyWind()
+    {
+        _hadleyCancellation?.Cancel();
+        _hadleyCancellation = null;
+        _hadleyWorld = null; _hadleyWind = null; _hadleyError = null;
+        _hadleyOverlay.Field = null;
+        _hadleyOverlay.QueueRedraw();
+    }
+
+    private async void RefreshHadleyWind()
+    {
+        if (_world is not WorldData world || _hadleyClosed) return;
+        if (_hadleyWorld is not null && !ReferenceEquals(_hadleyWorld, world)) InvalidateHadleyWind();
+        _hadleyOverlay.Domain = world.Domain;
+        if (_hadleyWind is not null)
+        {
+            _hadleyOverlay.Field = _hadleyWind;
+            _hadleyOverlay.QueueRedraw();
+            return;
+        }
+        if (_hadleyCancellation is not null || _hadleyError is not null) return;
+        var cancellation = new CancellationTokenSource();
+        _hadleyCancellation = cancellation; _hadleyWorld = world;
+        try
+        {
+            var field = await Task.Run(() => HadleyWindSimulation.Simulate(world, cancellationToken: cancellation.Token));
+            if (_hadleyClosed || cancellation.IsCancellationRequested || !ReferenceEquals(_world, world)) return;
+            _hadleyWind = field;
+            _hadleyOverlay.Field = field;
+            _hadleyOverlay.QueueRedraw();
+            if (IsHadleyLayer(_layer)) RefreshInspection();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            if (!_hadleyClosed && !cancellation.IsCancellationRequested && ReferenceEquals(_world, world))
+            {
+                _hadleyError = error.Message;
+                if (IsHadleyLayer(_layer)) RefreshInspection();
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_hadleyCancellation, cancellation)) _hadleyCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    private static string WindCompass(float vx, float vy)
+    {
+        if (vx * vx + vy * vy < 0.0004f)
+            return "Calmo";
+        float angle = MathF.Atan2(vy, vx) * (180f / MathF.PI);
+        if (angle < 0) angle += 360f;
+        int octant = (int)MathF.Round(angle / 45f) % 8;
+        return octant switch
+        {
+            0 => "→ L",
+            1 => "↘ SE",
+            2 => "↓ S",
+            3 => "↙ SO",
+            4 => "← O",
+            5 => "↖ NO",
+            6 => "↑ N",
+            _ => "↗ NE"
+        };
     }
 
     private static HBoxContainer AddBar(Control parent, Control.LayoutPreset preset, int top, int bottom)

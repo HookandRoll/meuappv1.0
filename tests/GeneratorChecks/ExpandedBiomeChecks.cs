@@ -100,7 +100,7 @@ public static partial class WorldGenerator
             foreach (int seed in new[] { 1234, 1, -77 })
             {
                 var size = MapDomain.ExpandedSize(128, 64);
-                var manifest = CheckManifest(size.Width, size.Height, wrap) with { Seed = seed };
+                var manifest = CheckManifest(size.Width, size.Height, false) with { Seed = seed };
                 manifest = manifest with { Generation = manifest.Generation with { Extent = MapExtent.World, ReferenceWidth = 128, ReferenceHeight = 64 } };
                 var world = Create(manifest); var ice = new PolarIceField(manifest);
                 int north = 0, south = 0, nonpolarLand = 0;

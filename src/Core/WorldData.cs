@@ -123,12 +123,14 @@ public sealed class WorldData
             throw new ArgumentException("Nome ou escala do mundo inválido.");
         if (manifest.Generation is not { Continents: >= 1 and <= 12, LandPercent: >= 0 and <= 100, CoastDetail: >= 0 and <= 100 } options
             || !Enum.IsDefined(options.Algorithm) || !Enum.IsDefined(options.Stage) || !Enum.IsDefined(options.Extent)
-            || options.TemperatureOffsetC is not (-5 or 0 or 5)
-            || options.PrecipitationOffsetPercent is not (-10 or 0 or 10))
+            || options.TemperatureOffsetC is < -20 or > 20
+            || options.PrecipitationOffsetPercent is < -50 or > 50)
             throw new ArgumentException("Configuração de geração inválida.");
         int polarRows = options.PolarOceanRows;
         int centralHeight = manifest.Height - 2 * polarRows;
         bool atlas = manifest.GeneratorVersion >= 37 && options.Extent == MapExtent.World;
+        if (atlas && manifest.HorizontalWrap)
+            throw new ArgumentException("Atlas não suporta wrap horizontal.");
         if ((!atlas && (manifest.Width > 4096 || centralHeight is < 32 or > 2048)) ||
             polarRows is < 0 or > 256 || (polarRows & 1) != 0 ||
             (polarRows > 0 && (manifest.GeneratorVersion < 36 || options.Extent != MapExtent.World || atlas)) ||

@@ -138,7 +138,9 @@ public static partial class WorldGenerator
         return new WorldRegion(left, top, right - left, bottom - top);
     }
 
-    private static void Generate(WorldData world, GenerationArea area, Action<GenerationProgress>? progress)
+    private static void Generate(WorldData world, GenerationArea area, Action<GenerationProgress>? progress,
+        Action<HadleyClimateExperimentResult>? experimentalClimate = null, float? experimentalRainTarget = null,
+        double? experimentalRainScale = null)
     {
         WorldManifest manifest = world.Manifest;
         if (manifest.GeneratorVersion is < 4 or > Version)
@@ -296,7 +298,9 @@ public static partial class WorldGenerator
         if (!terrain)
             return;
 
-        if (manifest.GeneratorVersion >= 55)
+        if (experimentalClimate is not null)
+            experimentalClimate(ApplyHadleyClimateExperiment(world, area, seed, progress, experimentalRainTarget, experimentalRainScale));
+        else if (manifest.GeneratorVersion >= 55)
             ApplyAnnualClimate(world, area, seed, progress);
         else
             ApplyLegacyClimate();

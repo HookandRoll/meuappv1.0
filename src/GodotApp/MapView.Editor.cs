@@ -171,7 +171,13 @@ public partial class MapView
         FinishGesture();
         WorldRegion? selection = _sourceSelection;
         _world = source;
-        _regionLabels.World=source;if(_layer==7)RefreshRegions();
+        InvalidateHadleyWind();
+        _regionLabels.World = source;
+        _regionLabels.QueueRedraw();
+        _material.SetShaderParameter("region_data", default(Variant));
+        _regionTexture?.Dispose();
+        _regionTexture = null;
+        if (_layer == 7) RefreshRegions();
         _riverOverlay.World = source;
         _volcanoOverlay.SetWorld(source, _artwork);
         _history = _sourceHistory;
@@ -537,8 +543,25 @@ public partial class MapView
         if (_world is WorldData world)
         {
             if (brush.Kind == BrushKind.Water)
+            {
+                var coastCells = new HashSet<int>(_strokeCells);
                 foreach (int i in _strokeCells)
-                    if (((HexLocks)world.LockMask[i] & HexLocks.Flags) == 0) world.RefreshCoast(i);
+                {
+                    Hex hex = HexGrid.FromOffset(i % world.Width, i / world.Width);
+                    for (int d = 0; d < 6; d++)
+                    {
+                        int neighbor = HexGrid.NeighborIndex(hex, d, world.Width, world.Height, world.Manifest.HorizontalWrap);
+                        if (world.Domain.Contains(neighbor)) coastCells.Add(neighbor);
+                    }
+                }
+                foreach (int i in coastCells)
+                    if (((HexLocks)world.LockMask[i] & HexLocks.Flags) == 0)
+                    {
+                        _history!.Capture(i);
+                        world.RefreshCoast(i);
+                        _editorPreview?.UpdateCell(world, i);
+                    }
+            }
             if (brush.Kind is BrushKind.Elevation or BrushKind.Water)
                 TerrainClassifier.ReclassifyAround(world, _strokeCells, i => _history!.Capture(i),
                     i => _editorPreview?.UpdateCell(world, i), _selection);
@@ -659,6 +682,7 @@ public partial class MapView
 
     private void EditChanged(bool updateTerrain, bool updateLocks, bool previewReady = false, bool updateClimate = false)
     {
+        if (updateTerrain || updateClimate) InvalidateHadleyWind();
         if(updateTerrain && _world is not null) { _world.GeographyDirty=true;if(_layer==7)RefreshRegions(); }
         _riverOverlay.World = _world;
         _riverOverlay.QueueRedraw();

@@ -57,7 +57,7 @@ public static partial class WorldGenerator
 
         int before = 0, after = 0;
         foreach (int seed in new[] { 1234, 1, -77, 2026 })
-        foreach (bool wrap in new[] { false, true })
+        foreach (bool wrap in new[] { false })
         {
             var manifest = CheckManifest(512, 256, wrap) with { Seed = seed };
             manifest = manifest with { Generation = manifest.Generation with
@@ -89,7 +89,7 @@ public static partial class WorldGenerator
     {
         foreach (int seed in new[] { 1234, 1, -77 })
         foreach (int continents in new[] { 3, 12 })
-        foreach (bool wrap in new[] { false, true })
+        foreach (bool wrap in new[] { false })
         foreach (int landPercent in new[] { 10, 38, 65 })
         {
             var size = MapDomain.ExpandedSize(128, 64);

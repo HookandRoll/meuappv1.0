@@ -23,7 +23,8 @@ public static partial class WorldGenerator
         }
 
         progress?.Invoke(new(GenerationStep.Climate, 0));
-        var regions = GeographicRegions.ClassifyClimateSurface(world, water, elevation);
+        var regions = GeographicRegions.ClassifyClimateSurface(world, water, elevation,
+            cacheGeography: area.IsInitialGeneration && world.Manifest.Generation.Stage == GenerationStage.Terrain);
         BuildAnnualClimate(world, water, elevation, regions, seed, progress, (cell, temperature, rain) =>
         {
             int col = cell % world.Width, row = cell / world.Width;
@@ -49,44 +50,27 @@ public static partial class WorldGenerator
         float localRainPerLevel = MoisturePerLevel / (float)WaterMoistureScale(height);
         float aspect = width / (float)height;
         var settings = world.Manifest.Generation;
-        var temperature = new short[world.Count];
+        var temperature = BuildAnnualTemperature(world, water, elevation, regions, seed);
         var rain = new float[world.Count];
         float[]? divertedVapor = world.Manifest.GeneratorVersion >= 57 ? new float[world.Count] : null;
         const float reflectedShare = 0.88f;
-        int maritimeReach = Math.Max(6, height / 8);
-        ushort[] marineDistance = DistanceFromMarineWater(world, regions, maritimeReach);
         float Latitude(int row) => (row + 0.5f) / height * 2 - 1;
         float SurfaceHeight(int cell) => water[cell] == WaterType.None ? Math.Max(0, (int)elevation[cell]) : 0;
-        Parallel.For(0, height, row =>
-        {
-            float latitude = Math.Abs(Latitude(row));
-            float sea = ModernSeaTemperature(latitude);
-            float marineTemperature = Math.Clamp(sea * 0.9f, -18f, 260f);
-            for (int col = 0; col < width; col++)
-            {
-                if (!world.Domain.Contains(col, row)) continue;
-                int cell = row * width + col;
-                float maritime = 1 - Smooth(marineDistance[cell] / (float)maritimeReach);
-                float local = (TerrainNoise((col + 0.5f) / height, (row + 0.5f) / height, 3.1f,
-                    aspect, wrap, seed ^ 0x4CF5AD43u) - 0.5f) * 48;
-                float air = Interpolate(sea + local, marineTemperature, maritime * 0.62f) - SurfaceHeight(cell) * 0.065f;
-                if (regions[cell] is RegionKind.Ocean or RegionKind.Sea) air = marineTemperature;
-                temperature[cell] = (short)(MathF.Round(air) + settings.TemperatureOffsetC * 10);
-            }
-        });
 
         // Four directional sweeps mix zonal flow with cross-latitude flow.
         // Their weights vary by latitude so the prevailing wind turns gradually.
         float scale = Math.Max(1, height / 128f);
-        var previous = new float[width];
-        var current = new float[width];
         int lateralReach = scaleSpreading ? AnnualWind.LateralReach(width, height, world.Manifest.GeneratorVersion) : 0;
-        double[]? rowSum = scaleSpreading ? new double[width + 1] : null;
-        int pass = 0;
-        foreach (int dy in new[] { 1, -1 })
-        foreach (int dx in new[] { 1, -1 })
+        var passRain = new float[4][];
+        var passReturns = new List<(int Cell, float Vapor)>?[4];
+        Parallel.For(0, 4, pass =>
         {
-            Array.Clear(previous);
+            int dy = pass < 2 ? 1 : -1, dx = (pass & 1) == 0 ? 1 : -1;
+            var previous = new float[width];
+            var current = new float[width];
+            double[]? rowSum = scaleSpreading ? new double[width + 1] : null;
+            var rainfall = passRain[pass] = new float[world.Count];
+            var returns = passReturns[pass] = divertedVapor is null ? null : new List<(int, float)>();
             for (int r = 0; r < height; r++)
             {
                 int row = dy > 0 ? r : height - 1 - r;
@@ -157,10 +141,10 @@ public static partial class WorldGenerator
                             {
                                 int fromCol = col - dx;
                                 if (windWrap) fromCol = fromCol < left ? right - 1 : fromCol >= right ? left : fromCol;
-                                divertedVapor[row * width + fromCol] += blockedHorizontal * returnWeight;
+                                returns!.Add((row * width + fromCol, blockedHorizontal * returnWeight));
                             }
-                            if (blockedVertical > 0) divertedVapor[upRow * width + upstream] += blockedVertical * returnWeight;
-                            if (blockedDiagonal > 0) divertedVapor[upRow * width + diagonal] += blockedDiagonal * returnWeight;
+                            if (blockedVertical > 0) returns!.Add((upRow * width + upstream, blockedVertical * returnWeight));
+                            if (blockedDiagonal > 0) returns!.Add((upRow * width + diagonal, blockedDiagonal * returnWeight));
                         }
                         // Ordinary rain still forms over lowlands. Use the sea-level
                         // equivalent air temperature so low ridges add no vapor loss.
@@ -183,14 +167,27 @@ public static partial class WorldGenerator
                         condensation *= AnnualWind.OceanCondensationShare;
                     horizontalVapor = current[col] = Math.Max(0, vapor - condensation);
                     horizontalHeight = localHeight;
-                    if (record) rain[cell] += contribution * (condensation - reflected) * scale;
+                    if (record) rainfall[cell] += contribution * (condensation - reflected) * scale;
                 }
                 if (rowSum is not null && r < height - 1)
                     AnnualWind.SpreadAcrossRow(current, rowSum, water, elevation, row * width,
                         left, right, lateralReach, windWrap);
                 (previous, current) = (current, previous);
             }
-            progress?.Invoke(new(GenerationStep.Climate, 20 + 18 * ++pass));
+        });
+        // Replay individual returns in sweep order: summing per-pass totals changes float rounding.
+        for (int pass = 0; pass < 4; pass++)
+        {
+            var rainfall = passRain[pass];
+            Parallel.For(0, height, row =>
+            {
+                for (int cell = row * width; cell < (row + 1) * width; cell++) rain[cell] += rainfall[cell];
+            });
+            if (passReturns[pass] is { } returns)
+                foreach (var returned in returns) divertedVapor![returned.Cell] += returned.Vapor;
+            passRain[pass] = null!;
+            passReturns[pass] = null;
+            progress?.Invoke(new(GenerationStep.Climate, 20 + 18 * (pass + 1)));
         }
 
         if (divertedVapor is not null)
@@ -218,6 +215,39 @@ public static partial class WorldGenerator
             }
         });
         progress?.Invoke(new(GenerationStep.Climate, 100));
+    }
+
+    private static short[] BuildAnnualTemperature(WorldData world, WaterType[] water, short[] elevation,
+        RegionKind[] regions, uint seed)
+    {
+        int width = world.Width, height = world.Height;
+        bool wrap = world.Manifest.HorizontalWrap;
+        float aspect = width / (float)height;
+        var settings = world.Manifest.Generation;
+        var temperature = new short[world.Count];
+        int maritimeReach = Math.Max(6, height / 8);
+        ushort[] marineDistance = DistanceFromMarineWater(world, regions, maritimeReach);
+        float Latitude(int row) => (row + 0.5f) / height * 2 - 1;
+        float SurfaceHeight(int cell) => water[cell] == WaterType.None ? Math.Max(0, (int)elevation[cell]) : 0;
+        Parallel.For(0, height, row =>
+        {
+            float latitude = Math.Abs(Latitude(row));
+            float sea = ModernSeaTemperature(latitude);
+            float marineTemperature = Math.Clamp(sea * 0.9f, -18f, 260f);
+            for (int col = 0; col < width; col++)
+            {
+                if (!world.Domain.Contains(col, row)) continue;
+                int cell = row * width + col;
+                float maritime = 1 - Smooth(marineDistance[cell] / (float)maritimeReach);
+                float local = (TerrainNoise((col + 0.5f) / height, (row + 0.5f) / height, 3.1f,
+                    aspect, wrap, seed ^ 0x4CF5AD43u) - 0.5f) * 48;
+                float air = Interpolate(sea + local, marineTemperature, maritime * 0.62f) - SurfaceHeight(cell) * 0.065f;
+                if (regions[cell] is RegionKind.Ocean or RegionKind.Sea) air = marineTemperature;
+                temperature[cell] = (short)(MathF.Round(air) + settings.TemperatureOffsetC * 10);
+            }
+        });
+
+        return temperature;
     }
 
     private static void SpreadWindwardVapor(WorldData world, WaterType[] water, short[] elevation,
