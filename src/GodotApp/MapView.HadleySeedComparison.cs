@@ -36,7 +36,7 @@ public partial class MapView
                 var size = MapDomain.ExpandedSize(4096, 2048);
                 var manifest = TestManifest(size.Width, size.Height, TerrainAlgorithm.ContinentalSculpt) with
                 {
-                    Seed = seed, GeneratorVersion = WorldGenerator.Version
+                    Seed = seed, GeneratorVersion = WorldGenerator.LegacyAnnualVersion
                 };
                 manifest = manifest with { Generation = manifest.Generation with
                 {
@@ -75,7 +75,7 @@ public partial class MapView
             using var process = Process.GetCurrentProcess();
             File.WriteAllText(Path.Combine(output, "summary.json"), JsonSerializer.Serialize(new
             {
-                completed, generatorVersion = WorldGenerator.Version, runs,
+                completed, generatorVersion = WorldGenerator.LegacyAnnualVersion, runs,
                 peakWorkingSetBytes = process.PeakWorkingSet64,
                 note = "Direction statistics sample the 512x256 atmosphere uniformly; screenshots are illustrative, not pixel-diff assertions."
             }, new JsonSerializerOptions { WriteIndented = true }));

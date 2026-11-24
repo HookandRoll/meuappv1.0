@@ -54,7 +54,7 @@ public partial class MapView
                     InstallWorld(world); RefreshInterface();
                     foreach (int layer in new[] { 0, 1 })
                     {
-                        SetLayer(layer); _layerSelect.Select(layer);
+                        SetLayer(layer); _layerSelect.Select(LayerMenuIndex(layer));
                         await NextDraw(); await NextDraw();
                         using Image image = GetViewport().GetTexture().GetImage();
                         Require(image.SavePng(Path.Combine(output, $"{width}-land-{land}-v{version}-layer-{layer}.png")) == Error.Ok,
@@ -107,7 +107,7 @@ public partial class MapView
                     InstallWorld(world); RefreshInterface();
                     foreach (int layer in new[] { 0, 1, 6 })
                     {
-                        SetLayer(layer); _layerSelect.Select(layer);
+                        SetLayer(layer); _layerSelect.Select(LayerMenuIndex(layer));
                         await NextDraw(); await NextDraw();
                         using Image image = GetViewport().GetTexture().GetImage();
                         Require(image.SavePng(Path.Combine(output, $"{width}-land-{land}-v{version}-layer-{layer}.png")) == Error.Ok,
@@ -142,7 +142,7 @@ public partial class MapView
                 InstallWorld(world); RefreshInterface();
                 foreach (int layer in new[] { 0, 1, 6 })
                 {
-                    SetLayer(layer); _layerSelect.Select(layer);
+                    SetLayer(layer); _layerSelect.Select(LayerMenuIndex(layer));
                     await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
                     using Image image = GetViewport().GetTexture().GetImage();
                     image.SavePng($"res://results/elevation-feather-v27/v{version}-layer-{layer}.png");
@@ -188,7 +188,7 @@ public partial class MapView
                 }
                 GD.Print($"ORGANIC v{version} land={land}: alpine={alpine}, peaks={peaks}");
                 metrics.Add(new { Version = version, LandPercent = land, Alpine = alpine, Peaks = peaks });
-                InstallWorld(world); RefreshInterface(); SetLayer(6); _layerSelect.Select(6);
+                InstallWorld(world); RefreshInterface(); SetLayer(6); _layerSelect.Select(LayerMenuIndex(6));
                 await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
                 using Image image = GetViewport().GetTexture().GetImage();
                 image.SavePng($"res://results/ridges-v26/land-{land}-v{version}.png");
@@ -219,7 +219,7 @@ public partial class MapView
                 InstallWorld(world); RefreshInterface();
                 foreach (int layer in new[] { 0, 6 })
                 {
-                    SetLayer(layer); _layerSelect.Select(layer);
+                    SetLayer(layer); _layerSelect.Select(LayerMenuIndex(layer));
                     await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
                     using Image image = GetViewport().GetTexture().GetImage();
                     image.SavePng($"res://results/ridges-climate-v25/world-v{version}-layer-{layer}.png");
@@ -430,7 +430,7 @@ public partial class MapView
                 InstallWorld(world); RefreshInterface();
                 foreach (int layer in new[] { 0, 6, 3 })
                 {
-                    SetLayer(layer); _layerSelect.Select(layer);
+                    SetLayer(layer); _layerSelect.Select(LayerMenuIndex(layer));
                     await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
                     using Image image = GetViewport().GetTexture().GetImage();
                     image.SavePng($"res://results/natural-v23/land-{land}-layer-{layer}.png");

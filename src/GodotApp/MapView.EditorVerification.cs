@@ -239,7 +239,7 @@ public partial class MapView
             Click("Bioma");
             Require(Descendants(_editorPanel).OfType<Label>().Any(label => label.Visible && label.Text == "Floresta temperada"),
                 "A paleta precisa identificar o bioma escolhido.");
-            _layerSelect.Select(5);
+            _layerSelect.Select(LayerMenuIndex(5));
             SetLayer(5);
             await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
             using Image frame = GetViewport().GetTexture().GetImage();

@@ -10,9 +10,9 @@ config_version=5
 
 [application]
 
-config/name="Jota Fantasy Map Maker — Alpha 2.0"
-config/description="Wind and Climate Simulation"
-config/version="2.0.0-alpha"
+config/name="Jota Fantasy Map Maker"
+config/description="Chuva em dois anéis limitada pelo relevo e biomas secos abaixo de 150 mm"
+config/version="2.1.0-alpha"
 run/main_scene="res://src/GodotApp/Map.tscn"
 config/features=PackedStringArray("4.7", "C#", "GL Compatibility")
 

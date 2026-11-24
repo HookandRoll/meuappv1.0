@@ -29,6 +29,14 @@
     <Compile Include="HadleyWindChecks.cs" />
     <Compile Include="HadleyMoistureChecks.cs" />
     <Compile Include="HadleyOrographicChecks.cs" />
+    <Compile Include="HadleyMainChecks.cs" />
+    <Compile Include="ThreeCellChecks.cs" />
+    <Compile Include="TransportReachChecks.cs" />
+    <Compile Include="RainRecyclingChecks.cs" />
+    <Compile Include="HumidityBoostChecks.cs" />
+    <Compile Include="HexRainSpreadChecks.cs" />
+    <Compile Include="BalancedRainChecks.cs" />
+    <Compile Include="TerrainRainChecks.cs" />
   </ItemGroup>
 </Project>
 

@@ -7,6 +7,7 @@ namespace Mapmaker.GodotApp;
 
 public partial class WorldCreationDialog : ConfirmationDialog
 {
+    internal static int ClimateRecipe => WorldGenerator.Version;
     internal const int DefaultLandPercent = 25;
     internal const int DefaultCoastDetail = 80;
     internal static readonly Vector2I[] Sizes =
@@ -152,6 +153,7 @@ public partial class WorldCreationDialog : ConfirmationDialog
             _hint.Text += "\nMapas pequenos têm menos espaço para costas, placas e rios.\nPara mais detalhe natural, recomendamos 512 × 256 ou maior.";
         if (generate && atlas && _land.Value > 65)
             _hint.Text += "\nO alvo respeita as margens oceânicas obrigatórias;\na área de terra efetiva pode ficar abaixo do valor escolhido.";
+        if (climate) _hint.Text += "\nCirculação Hadley, Ferrel e Polar — chuva simulada.";
         if (Visible)
             Size = FormSize();
     }
@@ -174,7 +176,7 @@ public partial class WorldCreationDialog : ConfirmationDialog
             PolarOceanRows: 0, ReferenceWidth: atlas ? reference.X : 0, ReferenceHeight: atlas ? reference.Y : 0,
             TemperatureOffsetC: (int)_temperature.Value, PrecipitationOffsetPercent: (int)_precipitation.Value);
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        var manifest = new WorldManifest(WorldFile.CurrentVersion, name, seed, WorldGenerator.Version,
+        var manifest = new WorldManifest(WorldFile.CurrentVersion, name, seed, ClimateRecipe,
             atlas ? expanded.Width : reference.X, atlas ? expanded.Height : reference.Y,
             _existing?.HorizontalWrap ?? false, _existing?.HexDistance ?? _distance.Value,
             "km", _existing?.CreatedAt ?? now, now, settings);

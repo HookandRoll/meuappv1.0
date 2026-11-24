@@ -18,7 +18,7 @@ public partial class MapView
             const int referenceWidth = 512, referenceHeight = 256;
             var (width, height, _) = MapDomain.ExpandedSize(referenceWidth, referenceHeight);
             var manifest = TestManifest(width, height, TerrainAlgorithm.ContinentalSculpt) with
-                { GeneratorVersion = WorldGenerator.Version, WorldName = "Clima anual · Seed 1234" };
+                { GeneratorVersion = WorldGenerator.LegacyAnnualVersion, WorldName = "Clima anual · Seed 1234" };
             manifest = manifest with { Generation = manifest.Generation with
             {
                 Extent = MapExtent.World, ReferenceWidth = referenceWidth, ReferenceHeight = referenceHeight,
@@ -61,7 +61,7 @@ public partial class MapView
                     InstallWorld(world); RefreshInterface(); FitMap();
                     foreach (var (layer, name) in new[] { (2, "temperatura"), (3, "chuva"), (4, "biomas") })
                     {
-                        SetLayer(layer); _layerSelect.Select(layer);
+                        SetLayer(layer); _layerSelect.Select(LayerMenuIndex(layer));
                         await NextDraw(); await NextDraw();
                         using var screenshot = GetViewport().GetTexture().GetImage();
                         Rect2 canvas = MapCanvasRect();

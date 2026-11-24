@@ -77,7 +77,7 @@ public static partial class WorldGenerator
                 {
                     int i = queue[j];
                     suitable = !(openPlains[i] && Biomes.IsForest(biome)) &&
-                        FitsBiomeClimate(biome, area.Temperature[i], area.Rainfall[i]);
+                        FitsBiomeClimate(biome, area.Temperature[i], area.Rainfall[i], area.GeneratorVersion);
                 }
                 if (suitable) { replacement = biome; best = votes[candidate]; }
             }
@@ -88,20 +88,20 @@ public static partial class WorldGenerator
     }
 
     // Small overlaps at thresholds allow ecotones to join their surrounding region.
-    private static bool FitsBiomeClimate(BiomeType biome, int temperature, int rainfall) => biome switch
+    private static bool FitsBiomeClimate(BiomeType biome, int temperature, int rainfall, int version = BalancedRainVersion) => biome switch
     {
         BiomeType.Tundra => temperature <= -25,
         BiomeType.Taiga => temperature is >= -85 and <= 75 && rainfall >= 320,
-        BiomeType.Desert => temperature >= 80 && rainfall < 360,
+        BiomeType.Desert => temperature >= 80 && rainfall < (version >= TerrainRainVersion ? 150 : 360),
         BiomeType.Steppe => temperature > -85 && rainfall < 580,
         BiomeType.Rainforest => temperature >= 195 && rainfall >= 1400,
-        BiomeType.Savanna => temperature >= 195 && rainfall is >= 380 and < 1200,
+        BiomeType.Savanna => temperature >= (version >= TerrainRainVersion ? 200 : 195) && rainfall is >= 380 and < 1200,
         BiomeType.TemperateForest => temperature is > 15 and < 255 && rainfall >= 850,
-        BiomeType.Grassland => temperature is > 15 and < 255 && rainfall is >= 380 and < 1150,
+        BiomeType.Grassland => temperature > (version >= TerrainRainVersion ? -55 : 15) && temperature < (version >= TerrainRainVersion ? 200 : 255) && rainfall is >= 380 and < 1150,
         BiomeType.SeasonalForest => temperature >= 180 && rainfall >= 950,
         BiomeType.TemperateRainforest => temperature is > 25 and < 245 && rainfall >= 1650,
-        BiomeType.Shrubland => temperature is >= 100 and < 245 && rainfall is >= 300 and < 780,
-        BiomeType.Badlands => temperature > -55 && rainfall < 380,
+        BiomeType.Shrubland => temperature is >= 100 and < 245 && rainfall >= (version >= TerrainRainVersion ? 150 : 300) && rainfall < 780,
+        BiomeType.Badlands => temperature > -55 && rainfall < (version >= TerrainRainVersion ? 150 : 380),
         _ => false
     };
 }

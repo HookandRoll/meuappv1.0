@@ -15,6 +15,7 @@ public static partial class WorldGenerator
         private readonly HexLocks _fields;
         private readonly ushort[] _locks;
         private readonly MapDomain _domain;
+        public int GeneratorVersion { get; }
         public int WorldHeight { get; }
         public int WorldWidth => _worldWidth;
         public bool Wrap => _wrap;
@@ -37,6 +38,7 @@ public static partial class WorldGenerator
             WorldRegion? selection = null, HexLocks fields = HexLocks.None)
         {
             _bounds = bounds;
+            GeneratorVersion = world.Manifest.GeneratorVersion;
             _selection = selection;
             _fields = fields;
             _locks = world.LockMask;

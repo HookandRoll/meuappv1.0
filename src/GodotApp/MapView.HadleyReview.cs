@@ -22,10 +22,10 @@ public partial class MapView
             SelectHex(anchor);
             Require(_inspection.Text.Contains("Solo") && _hadleyOverlay.Layer == HadleyAtmosphereLayer.Surface, "Inspeção de superfície incorreta.");
             await NextDraw(); Screenshot("hadley-two-layers-surface.png");
-            _layerSelect.GetPopup().EmitSignal(PopupMenu.SignalName.IndexPressed, HadleyUpperLayer);
+            _layerSelect.GetPopup().EmitSignal(PopupMenu.SignalName.IndexPressed, LayerMenuIndex(HadleyUpperLayer));
             await NextDraw();
             Require(ReferenceEquals(cached, _hadleyWind) && _inspection.Text.Contains("Altitude")
-                && _layerSelect.Selected == HadleyUpperLayer && _hadleyOverlay.Layer == HadleyAtmosphereLayer.Upper,
+                && _layerSelect.Selected == LayerMenuIndex(HadleyUpperLayer) && _hadleyOverlay.Layer == HadleyAtmosphereLayer.Upper,
                 "Selecionar altitude não reutilizou o mesmo campo atmosférico.");
             await NextDraw(); Screenshot("hadley-two-layers-upper.png");
 

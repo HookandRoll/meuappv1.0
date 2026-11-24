@@ -208,7 +208,7 @@ public partial class MapView
             {
                 Screenshot(large ? "benchmark-sculpt-large.png" : "benchmark-sculpt.png");
                 SetLayer(1);
-                _layerSelect.Select(1);
+                _layerSelect.Select(LayerMenuIndex(1));
                 await NextDraw();
                 Screenshot(large ? "benchmark-sculpt-elevation-large.png" : "benchmark-sculpt-elevation.png");
                 SetLayer(0);
@@ -287,7 +287,7 @@ public partial class MapView
             for (int i = 1; i <= Layers.Length; i++)
             {
                 timer.Restart();
-                SetLayer(i % Layers.Length);
+                SetLayer(LayerIds[i % Layers.Length]);
                 _layerSelect.Select(i % Layers.Length);
                 await NextDraw();
                 slowestLayer = Math.Max(slowestLayer, timer.Elapsed.TotalMilliseconds);

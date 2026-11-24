@@ -36,7 +36,7 @@ public partial class MapView
             {
                 var size = MapDomain.ExpandedSize(4096, 2048);
                 var manifest = TestManifest(size.Width, size.Height, TerrainAlgorithm.ContinentalSculpt) with
-                { Seed = seed, GeneratorVersion = WorldGenerator.Version };
+                { Seed = seed, GeneratorVersion = WorldGenerator.LegacyAnnualVersion };
                 manifest = manifest with { Generation = manifest.Generation with
                 {
                     Extent = MapExtent.World, ReferenceWidth = 4096, ReferenceHeight = 2048,
@@ -111,7 +111,7 @@ public partial class MapView
         {
             File.WriteAllText(Path.Combine(output, "summary.json"), JsonSerializer.Serialize(new
             {
-                completed, generatorVersion = WorldGenerator.Version, trials,
+                completed, generatorVersion = WorldGenerator.LegacyAnnualVersion, trials,
                 setup = "Coupled two-layer winds, transported heat/vapor/clouds, delayed rain and soil recycling. No subtropical rain penalty or prescribed three-cell pressure bands. Initial annual surface temperature and terrain are controlled; atmospheric temperatures evolve. One global intensity scale targets the old mean before the 5000 mm cap.",
                 calibration = "Raw rain is uncalibrated. The global factor changes intensity, not latitude distribution; the cap may lower the final mean. No latitude-specific tuning was applied.",
                 moisture = new HadleyMoistureSettings(), peakWorkingSetBytes = Process.GetCurrentProcess().PeakWorkingSet64

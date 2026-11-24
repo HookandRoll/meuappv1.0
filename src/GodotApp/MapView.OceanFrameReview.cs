@@ -27,7 +27,7 @@ public partial class MapView
                     GD.Print($"ATLAS QUOTA: target={manifest.Generation.LandPercent}%, land={land}, nonpolar={world.Domain.PercentageAreaCount}, actual={100.0 * land / world.Domain.PercentageAreaCount:F4}%.");
                 }
                 InstallWorld(world); RefreshInterface();
-                SetLayer(6); _layerSelect.Select(6);
+                SetLayer(6); _layerSelect.Select(LayerMenuIndex(6));
                 await NextDraw(); await NextDraw();
                 if (extent == MapExtent.World)
                     for (int frame = 0; frame < 45; frame++) await NextDraw();

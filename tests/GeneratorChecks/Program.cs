@@ -19,7 +19,27 @@ catch (Exception ex)
 
 static void RunChecks(string[] args)
 {
+if (args.Contains("--terrain-rain-only")) { WorldGenerator.CheckTerrainRain(); return; }
+if (args.Length == 0) WorldGenerator.CheckTerrainRain();
+if (args.Contains("--balanced-rain-only")) { WorldGenerator.CheckBalancedRain(); return; }
+if (args.Length == 0) WorldGenerator.CheckBalancedRain();
+if (args.Contains("--hex-rain-spread-only")) { WorldGenerator.CheckHexRainSpread(); return; }
+if (args.Length == 0) WorldGenerator.CheckHexRainSpread();
+if (args.Contains("--humidity-boost-only")) { WorldGenerator.CheckHumidityBoost(); return; }
+if (args.Length == 0) WorldGenerator.CheckHumidityBoost();
+if (args.Contains("--rain-return-only")) { WorldGenerator.CheckRainRecycling(); return; }
+if (args.Contains("--climate-matrix") || args.Contains("--humidity-boost-review") || args.Contains("--hex-rain-spread-review") || args.Contains("--balanced-rain-review")) { WorldGenerator.ReviewClimateMatrix(args); return; }
+if (args.Length == 0) WorldGenerator.CheckRainRecycling();
+if (args.Contains("--cloud-transport-only")) { WorldGenerator.CheckCloudTransport(); return; }
+if (args.Length == 0) WorldGenerator.CheckCloudTransport();
+if (args.Contains("--transport-mixing-review")) { WorldGenerator.ReviewTransportReach(mixing: true); return; }
+if (args.Contains("--transport-seed-review")) { WorldGenerator.ReviewTransportReach(); return; }
+if (args.Contains("--moisture-transport-only")) { WorldGenerator.CheckMoistureTransport(); return; }
+if (args.Length == 0) WorldGenerator.CheckMoistureTransport();
+if (args.Contains("--three-cells-only")) { WorldGenerator.CheckThreeCells(); return; }
+if (args.Contains("--hadley-main-only")) { WorldGenerator.CheckHadleyMain(); return; }
 if (args.Contains("--hadley-climate-only")) { WorldGenerator.CheckHadleyMoisture(); return; }
+if (args.Length == 0) { WorldGenerator.CheckThreeCells(); WorldGenerator.CheckHadleyMain(); }
 WorldGenerator.CheckHadleyMoisture();
 if (args.Contains("--hadley-only")) { WorldGenerator.CheckHadleyWind(); return; }
 if (args.Contains("--hadley-large")) { WorldGenerator.CheckHadleyWind(large: true); return; }
@@ -148,7 +168,7 @@ namespace Mapmaker.Core
     public static partial class WorldGenerator
     {
         internal static WorldManifest CheckManifest(int width, int height, bool wrap) => new(
-            WorldFile.CurrentVersion, "Generator checks", 1234, Version, width, height, wrap, 5, "km",
+            WorldFile.CurrentVersion, "Generator checks", 1234, LegacyAnnualVersion, width, height, wrap, 5, "km",
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch,
             new(TerrainAlgorithm.ContinentalSculpt, 3, 38, 50, GenerationStage.Terrain));
 

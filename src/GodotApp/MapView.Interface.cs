@@ -175,9 +175,9 @@ public partial class MapView
         _mapControls = controls;
         header.AddChild(controls);
         _layerSelect = new OptionButton { CustomMinimumSize = new Vector2(132, 36) };
-        foreach (string layer in Layers)
-            _layerSelect.AddItem(layer);
-        _layerSelect.ItemSelected += index => SetLayer((int)index);
+        for (int i = 0; i < Layers.Length; i++)
+            _layerSelect.AddItem(Layers[i], LayerIds[i]);
+        _layerSelect.ItemSelected += index => SetLayer(_layerSelect.GetItemId((int)index));
         controls.AddChild(_layerSelect);
         _gridToggle = new CheckButton { Text = "Grade" };
         _gridToggle.Toggled += enabled => _material.SetShaderParameter("show_grid", enabled);

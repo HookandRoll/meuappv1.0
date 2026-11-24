@@ -25,7 +25,7 @@ public partial class MapView
             using var document = JsonDocument.Parse(File.ReadAllText(baselinePath));
             var baseline = document.RootElement;
             Require(baseline.GetProperty("completed").GetBoolean()
-                && baseline.GetProperty("generatorVersion").GetInt32() == WorldGenerator.Version,
+                && baseline.GetProperty("generatorVersion").GetInt32() == WorldGenerator.LegacyAnnualVersion,
                 "A referência anterior precisa estar completa e usar a mesma versão.");
             DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
             foreach (int seed in new[] { 1234, -77 })
@@ -43,7 +43,7 @@ public partial class MapView
                 double scale = previous.GetProperty("GlobalIntensityScale").GetDouble();
                 var size = MapDomain.ExpandedSize(4096, 2048);
                 var manifest = TestManifest(size.Width, size.Height, TerrainAlgorithm.ContinentalSculpt) with
-                { Seed = seed, GeneratorVersion = WorldGenerator.Version };
+                { Seed = seed, GeneratorVersion = WorldGenerator.LegacyAnnualVersion };
                 manifest = manifest with { Generation = manifest.Generation with
                 {
                     Extent = MapExtent.World, ReferenceWidth = 4096, ReferenceHeight = 2048,
@@ -111,7 +111,7 @@ public partial class MapView
 
         void Save(bool completed) => File.WriteAllText(Path.Combine(output, "summary.json"), JsonSerializer.Serialize(new
         {
-            completed, generatorVersion = WorldGenerator.Version, baselinePath,
+            completed, generatorVersion = WorldGenerator.LegacyAnnualVersion, baselinePath,
             setup = (orographic ? "Advected lower dry static temperature T+Gamma*z versus archived instantaneous uphill cooling. Same 90/95/85/80% moisture targets and 2x replenishment. "
                 : "Current orographic model with 90/95/85/80% targets and 2x aquatic replenishment versus archived coupled baseline (instantaneous cooling, 80% water, 75% soil, 1x). ")
                 + "Same seeds and eight terrain/annual-temperature control hashes. Previous per-seed rain conversion factor frozen before running; no renormalization to the old global mean. Common 5000 cap retained.",

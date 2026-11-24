@@ -32,7 +32,7 @@ public partial class MapView
                     InstallWorld(world); RefreshInterface();
                     foreach (int layer in new[] { 0, 1, 2, 3 })
                     {
-                        SetLayer(layer); _layerSelect.Select(layer);
+                        SetLayer(layer); _layerSelect.Select(LayerMenuIndex(layer));
                         await NextDraw(); await NextDraw();
                         Screenshot($"climate-height-{(atlas ? "world" : "region")}-v{version}-layer-{layer}.png");
                     }

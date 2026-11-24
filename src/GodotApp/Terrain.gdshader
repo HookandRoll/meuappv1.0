@@ -15,6 +15,10 @@ uniform int format_probe = 0;
 uniform sampler2D terrain_data : filter_nearest, repeat_disable;
 uniform sampler2D region_data : filter_nearest, repeat_disable;
 uniform sampler2D climate_data : filter_nearest, repeat_disable;
+uniform sampler2D humidity_data : filter_nearest, repeat_disable;
+uniform sampler2D humidity_rows : filter_nearest, repeat_disable;
+uniform bool has_humidity = false;
+uniform bool humidity_wrap = false;
 uniform sampler2D detail_data : filter_nearest, repeat_disable;
 uniform sampler2D lock_data : filter_nearest, repeat_disable;
 uniform sampler2DArray editor_data : filter_nearest, repeat_disable;
@@ -757,6 +761,29 @@ void fragment() {
             color = layer == 2
                 ? mix(vec3(0.23, 0.49, 0.69), vec3(0.94, 0.46, 0.24), clamp((unpack16(data.rg) - 32468.0) / 650.0, 0.0, 1.0))
                 : mix(vec3(0.75, 0.56, 0.35), vec3(0.14, 0.42, 0.63), clamp(unpack16(data.ba) / 3000.0, 0.0, 1.0));
+        } else if (layer == 11) {
+            color = vec3(0.22, 0.23, 0.24);
+            if (has_humidity) {
+                vec2 bounds = texelFetch(humidity_rows, ivec2(0, offset.y), 0).rg;
+                ivec2 size = textureSize(humidity_data, 0);
+                vec2 pos = vec2((float(offset.x) - bounds.x + 0.5) / bounds.y,
+                    (float(offset.y) + 0.5) / float(map_size.y)) * vec2(size) - 0.5;
+                ivec2 low = ivec2(floor(pos));
+                ivec2 high = low + ivec2(1);
+                low.y = clamp(low.y, 0, size.y - 1);
+                high.y = clamp(high.y, 0, size.y - 1);
+                low.x = humidity_wrap ? (low.x % size.x + size.x) % size.x : clamp(low.x, 0, size.x - 1);
+                high.x = humidity_wrap ? (high.x % size.x + size.x) % size.x : clamp(high.x, 0, size.x - 1);
+                float bottom = mix(texelFetch(humidity_data, low, 0).r,
+                    texelFetch(humidity_data, ivec2(high.x, low.y), 0).r, fract(pos.x));
+                float top = mix(texelFetch(humidity_data, ivec2(low.x, high.y), 0).r,
+                    texelFetch(humidity_data, high, 0).r, fract(pos.x));
+                float rh = clamp(mix(bottom, top, fract(pos.y)), 0.0, 1.0);
+                vec3 dry = vec3(0.75, 0.12, 0.16);
+                vec3 middle = vec3(0.96, 0.92, 0.82);
+                vec3 wet = vec3(0.08, 0.30, 0.78);
+                color = rh < 0.5 ? mix(dry, middle, rh * 2.0) : mix(middle, wet, (rh - 0.5) * 2.0);
+            }
         } else if (layer == 7) {
             color = texelFetch(region_data, offset, 0).rgb;
         } else if (layer == 8) {

@@ -27,7 +27,7 @@ public partial class MapView
                 InstallWorld(world); RefreshInterface();
                 foreach (int layer in new[] { 0, 4 })
                 {
-                    SetLayer(layer); _layerSelect.Select(layer);
+                    SetLayer(layer); _layerSelect.Select(LayerMenuIndex(layer));
                     await NextDraw(); await NextDraw(); Screenshot($"biome-majority-v{version}-layer-{layer}.png");
                 }
             }

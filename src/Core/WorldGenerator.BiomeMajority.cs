@@ -41,7 +41,7 @@ public static partial class WorldGenerator
                     for (int n = 0; n < 6; n++) if (neighbors[n] == candidate) votes++;
                     if (votes >= 4) { winner = candidate; break; }
                 }
-                if (winner == BiomeType.None || !FitsBiomeClimate(winner, area.Temperature[i], area.Rainfall[i]) ||
+                if (winner == BiomeType.None || !FitsBiomeClimate(winner, area.Temperature[i], area.Rainfall[i], area.GeneratorVersion) ||
                     (openPlains[i] && Biomes.IsForest(winner))) return;
                 // The sampled neighbors may lie across a lake or coastline.
                 // Every winning ray must be connected through eligible land.

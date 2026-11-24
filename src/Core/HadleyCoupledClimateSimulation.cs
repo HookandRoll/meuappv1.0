@@ -12,12 +12,15 @@ internal sealed record HadleyCoupledSettings(bool EvolveTemperature = true, bool
     double OceanHumidityTarget = 0.90, double ShallowOceanHumidityTarget = 0.95,
     double LakeHumidityTarget = 0.85, double OtherHumidityTarget = 0.80,
     double AquaticReplenishmentMultiplier = 2, bool OrographicThermodynamics = true,
-    double DryLapseRate = 9.8, double ThermalRelaxationMultiplier = 1);
+    double DryLapseRate = 9.8, double ThermalRelaxationMultiplier = 1,
+    double VaporCapacityMultiplier = 1, double OceanRainShare = 1, double MoistureDiffusivity = 0,
+    double RainReturnThresholdMm = 500, double RainReturnShare = 0);
 internal sealed record HadleyCoupledDiagnostics(double OceanEvaporation, double SoilEvaporation,
     double Runoff, double Rainfall, double AtmosphericWater, double SoilWater,
     double CloudWater, double TemperatureChangeRms, float[] Vapor, float[] Clouds, float[] Soil,
     float[] LowerTemperature, float[] UpperTemperature, HadleyHydrologyBand[] LatitudeBands,
-    HadleyHydrologyBand[] CoastDistanceBands, HadleyCoupledSettings Settings, int TemperatureLimitApplications);
+    HadleyHydrologyBand[] CoastDistanceBands, HadleyCoupledSettings Settings, int TemperatureLimitApplications,
+    double ReturnedRain, float[] RainReturnRate, float[] AquaticEvaporationRate, float[] SoilEvaporationRate, float[] RelativeHumidity);
 
 // Normalized two-layer experiment, not a calibrated atmospheric model.
 internal sealed partial class HadleyCoupledClimateSimulation : HadleyWindSimulation.ICoupledAtmosphere
@@ -36,6 +39,9 @@ internal sealed partial class HadleyCoupledClimateSimulation : HadleyWindSimulat
     private readonly double[] _soil, _rain, _oceanEvap, _soilEvap, _runoff, _totalRain;
     private readonly double[] _fx, _fy;
     private readonly double[] _vaporSum, _cloudSum;
+    private readonly double[] _relativeHumiditySum;
+    private readonly double[] _returnedRain, _sampleRainReturn, _sampleOceanEvap, _sampleSoilEvap;
+    private readonly double _rainOffsetMultiplier;
     private readonly int[] _temperatureLimits;
     private float[]? _baseForcing;
     private double _time;
@@ -49,6 +55,7 @@ internal sealed partial class HadleyCoupledClimateSimulation : HadleyWindSimulat
         _wrap = world.Manifest.HorizontalWrap || AnnualWind.WrapsAtlas(world);
         _ix = _width / 128f; _iy = _height / 64f;
         _settings = settings; _coupling = coupling; _progress = progress; _token = token;
+        _rainOffsetMultiplier = 1 + world.Manifest.Generation.PrecipitationOffsetPercent / 100.0;
         _target = new float[_count]; _wet = new float[_count]; _land = new float[_count];
         _deepOcean = new float[_count]; _shallowOcean = new float[_count];
         _lake = new float[_count]; _wetland = new float[_count];
@@ -95,6 +102,9 @@ internal sealed partial class HadleyCoupledClimateSimulation : HadleyWindSimulat
         _runoff = new double[_count]; _totalRain = new double[_count];
         _fx = new double[_count]; _fy = new double[_count];
         _vaporSum = new double[_count]; _cloudSum = new double[_count]; _temperatureLimits = new int[_count];
+        _returnedRain = new double[_count]; _sampleRainReturn = new double[_count];
+        _relativeHumiditySum = new double[_count];
+        _sampleOceanEvap = new double[_count]; _sampleSoilEvap = new double[_count];
         for (int y = 0; y < _height; y++)
         for (int x = 0; x < _width; x++)
         {
@@ -123,7 +133,7 @@ internal sealed partial class HadleyCoupledClimateSimulation : HadleyWindSimulat
             || !float.IsFinite(s.CondensationRate) || s.CondensationRate is <= 0 or > 4)
             throw new ArgumentOutOfRangeException(nameof(settings));
         cancellationToken.ThrowIfCancellationRequested();
-        var c = coupling ?? new HadleyCoupledSettings();
+        var c = coupling ?? CouplingFor(world.Manifest);
         if (!float.IsFinite(c.CloudRainTime) || c.CloudRainTime is < 0.1f or > 30
             || !double.IsFinite(c.InitialRelativeHumidity) || c.InitialRelativeHumidity is < 0 or > 1
             || !double.IsFinite(c.InitialSoilWater) || c.InitialSoilWater is < 0 or > 80)
@@ -137,13 +147,32 @@ internal sealed partial class HadleyCoupledClimateSimulation : HadleyWindSimulat
         if (!double.IsFinite(c.DryLapseRate) || c.DryLapseRate is < 0 or > 15
             || !double.IsFinite(c.ThermalRelaxationMultiplier) || c.ThermalRelaxationMultiplier is < 0 or > 2)
             throw new ArgumentOutOfRangeException(nameof(coupling));
+        if (!double.IsFinite(c.MoistureDiffusivity) || c.MoistureDiffusivity is < 0 or > 0.2)
+            throw new ArgumentOutOfRangeException(nameof(coupling));
+        if (!double.IsFinite(c.VaporCapacityMultiplier) || c.VaporCapacityMultiplier is < 1 or > 3
+            || !double.IsFinite(c.OceanRainShare) || c.OceanRainShare is < 0 or > 1)
+            throw new ArgumentOutOfRangeException(nameof(coupling));
+        if (!double.IsFinite(c.RainReturnThresholdMm) || c.RainReturnThresholdMm is < 0 or > 10000
+            || !double.IsFinite(c.RainReturnShare) || c.RainReturnShare is < 0 or > 0.5)
+            throw new ArgumentOutOfRangeException(nameof(coupling));
         var solver = new HadleyCoupledClimateSimulation(world, windSettings, s, c, progress, cancellationToken);
         var wind = HadleyWindSimulation.Run(world, windSettings with
         {
-            Iterations = s.WarmupSteps + s.SampleSteps, TimeStep = s.TimeStep, UseZonalPressureBands = false
+            Iterations = s.WarmupSteps + s.SampleSteps, TimeStep = s.TimeStep,
+            UseZonalPressureBands = windSettings.Cells is not null
         }, cancellationToken, solver);
         return (wind, solver.Result(wind));
     }
+
+    internal static HadleyCoupledSettings CouplingFor(WorldManifest manifest) =>
+        manifest.GeneratorVersion >= WorldGenerator.MoistureTransportVersion
+            ? new HadleyCoupledSettings(
+                VaporCapacityMultiplier: manifest.GeneratorVersion >= WorldGenerator.BalancedRainVersion ? 40.0 / 30
+                    : manifest.GeneratorVersion >= WorldGenerator.HumidityBoostVersion ? 1.95 : 1.5,
+                OceanRainShare: 0.5,
+                MoistureDiffusivity: manifest.GeneratorVersion >= WorldGenerator.CloudTransportVersion ? 0.08 : 0,
+                RainReturnShare: manifest.GeneratorVersion >= WorldGenerator.RainRecyclingVersion ? 0.25 : 0)
+            : new HadleyCoupledSettings();
 
     public void BeforeTransport(HadleyWindField field, float dt)
     {
@@ -153,6 +182,8 @@ internal sealed partial class HadleyCoupledClimateSimulation : HadleyWindSimulat
             bool upper = channel % 2 == 1;
             var vx = upper ? field.UpperVx : field.Vx; var vy = upper ? field.UpperVy : field.Vy;
             var q = _q[channel]; var result = _next[channel];
+            if (channel < 4 && _coupling.MoistureDiffusivity > 0)
+                MixMoisture(q, result, upper ? field.UpperMass : field.LowerMass, dt);
             Rows(y =>
             {
                 for (int x = 0; x < _width; x++)
@@ -174,6 +205,33 @@ internal sealed partial class HadleyCoupledClimateSimulation : HadleyWindSimulat
             });
             (_q[channel], _next[channel]) = (_next[channel], _q[channel]);
         }
+    }
+
+    private void MixMoisture(double[] water, double[] scratch, float[] mass, float dt)
+    {
+        double coefficient = _coupling.MoistureDiffusivity * dt;
+        Rows(y =>
+        {
+            for (int x = 0; x < _width; x++)
+            {
+                int i = y * _width + x, r = y * _width + X(x + 1), d = Math.Min(_height - 1, y + 1) * _width + x;
+                // Mix concentrations, with equal and opposite fluxes across each face.
+                _fx[i] = !_wrap && x == _width - 1 ? 0 : coefficient * _ix * _ix * Math.Min(mass[i], mass[r])
+                    * (water[i] / mass[i] - water[r] / mass[r]);
+                _fy[i] = y == _height - 1 ? 0 : coefficient * _iy * _iy * Math.Min(mass[i], mass[d])
+                    * (water[i] / mass[i] - water[d] / mass[d]);
+            }
+        });
+        Rows(y =>
+        {
+            for (int x = 0; x < _width; x++)
+            {
+                int i = y * _width + x;
+                scratch[i] = water[i] - _fx[i] + (!_wrap && x == 0 ? 0 : _fx[y * _width + X(x - 1)])
+                    - _fy[i] + (y == 0 ? 0 : _fy[(y - 1) * _width + x]);
+            }
+        });
+        Array.Copy(scratch, water, _count);
     }
 
     public void Exchange(int i, float amount, float lowerMass, float upperMass)
@@ -212,7 +270,8 @@ internal sealed partial class HadleyCoupledClimateSimulation : HadleyWindSimulat
                     _lake[i], _wetland[i], _settings.EvaporationRelaxation, dt, _coupling);
                 double soilEvap = _coupling.RecycleSoil ? Math.Min(_soil[i], _land[i] * 0.035 * dt * Math.Max(0, cap * _coupling.OtherHumidityTarget - _q[0][i])
                     * Math.Min(1, _soil[i] / Math.Max(1, 25 * _land[i]))) : 0;
-                _q[0][i] += ocean + soilEvap; _soil[i] -= soilEvap;
+                _soil[i] -= soilEvap;
+                _q[0][i] += ocean + soilEvap;
                 _oceanEvap[i] += ocean; _soilEvap[i] += soilEvap;
                 tl -= (ocean + soilEvap) * 0.025 / ml;
                 double uphill = Math.Max(0, field.Vx[i] * _slopeX[i] + field.Vy[i] * _slopeY[i]);
@@ -229,11 +288,17 @@ internal sealed partial class HadleyCoupledClimateSimulation : HadleyWindSimulat
                     if (layer == 0) tl += (condensed - reevap) * 0.025 / mass;
                     else tu += (condensed - reevap) * 0.025 / mass;
                 }
-                double retained = Math.Exp(-dt / _coupling.CloudRainTime);
+                double oceanFraction = _deepOcean[i] + _shallowOcean[i];
+                // Reduced ocean rain stays in the cloud reservoir and continues to travel.
+                double retained = CloudRetention(dt, _coupling.CloudRainTime, oceanFraction, _coupling.OceanRainShare);
                 double rain = (_q[2][i] + _q[3][i]) * (1 - retained);
                 _q[2][i] *= retained; _q[3][i] *= retained;
                 _totalRain[i] += rain; if (sampled) _rain[i] += rain;
                 double infiltration = rain * _land[i]; _soil[i] += infiltration;
+                double returned = ReturnedRain(rain, _land[i], _totalRain[i], _time + dt,
+                    _coupling.RainReturnThresholdMm, _coupling.RainReturnShare, _rainOffsetMultiplier);
+                // Returned rainfall is withdrawn from newly infiltrated water, then carried by lower clouds.
+                _soil[i] -= returned; _q[2][i] += returned; _returnedRain[i] += returned;
                 double overflow = Math.Max(0, _soil[i] - 80 * _land[i]);
                 _soil[i] -= overflow; _runoff[i] += rain - infiltration + overflow;
                 if (tl is < -90 or > 65 || tu is < -100 or > 50) _temperatureLimits[i]++;
@@ -244,8 +309,11 @@ internal sealed partial class HadleyCoupledClimateSimulation : HadleyWindSimulat
                 forcing[i] = _baseForcing[i] - (float)(0.04 * (tl - _target[i]) + 0.02 * (tu - (_target[i] - 25)));
                 if (sampled)
                 {
+                    _relativeHumiditySum[i] += Math.Clamp(_q[0][i] / Math.Max(1e-12, Capacity(tl) * ml), 0, 1) * dt;
                     _vaporSum[i] += (_q[0][i] + _q[1][i]) * dt;
                     _cloudSum[i] += (_q[2][i] + _q[3][i]) * dt;
+                    _sampleOceanEvap[i] += ocean; _sampleSoilEvap[i] += soilEvap;
+                    _sampleRainReturn[i] += returned;
                 }
             }
         });
@@ -302,12 +370,31 @@ internal sealed partial class HadleyCoupledClimateSimulation : HadleyWindSimulat
         var diagnostics = new HadleyCoupledDiagnostics(ocean, _soilEvap.Sum(), runoff, _totalRain.Sum(),
             atmospheric, soil, _q[2].Sum() + _q[3].Sum(), Math.Sqrt(tempChange / _count),
             vapor, clouds, _soil.Select(value => (float)value).ToArray(), lowerTemp, upperTemp,
-            latitudeBands, coastBands, _coupling, _temperatureLimits.Sum());
+            latitudeBands, coastBands, _coupling, _temperatureLimits.Sum(),
+            _returnedRain.Sum(),
+            _sampleRainReturn.Select(value => (float)(value / (_settings.SampleSteps * _settings.TimeStep))).ToArray(),
+            _sampleOceanEvap.Select(value => (float)(value / (_settings.SampleSteps * _settings.TimeStep))).ToArray(),
+            _sampleSoilEvap.Select(value => (float)(value / (_settings.SampleSteps * _settings.TimeStep))).ToArray(),
+            _relativeHumiditySum.Select(value => (float)(value / (_settings.SampleSteps * _settings.TimeStep))).ToArray());
         return new(annualRain,
             _initial, ocean, _totalRain.Sum(), final, error, _settings, diagnostics);
     }
 
-    private static double Capacity(double temperature) => 30 * Math.Exp(0.06 * (Math.Clamp(temperature, -60, 45) - 25));
+    internal static double CloudRetention(double dt, double rainTime, double oceanFraction, double oceanRainShare)
+        => 1 - (1 - Math.Exp(-dt / rainTime)) * (1 - oceanFraction * (1 - oceanRainShare));
+
+    internal static double ReturnedRain(double rain, double landFraction, double cumulativeRain, double elapsedTime,
+        double thresholdMm, double share, double rainOffsetMultiplier = 1)
+    {
+        if (rain <= 0 || landFraction <= 0 || share <= 0) return 0;
+        // Use the received rainfall history, in the same annual units as the generated map, not a per-step threshold.
+        double annualMm = Math.Min(5000, cumulativeRain * 365 * WorldGenerator.HadleyRainScale / elapsedTime)
+            * rainOffsetMultiplier;
+        return annualMm > thresholdMm ? rain * landFraction * share : 0;
+    }
+
+    private double Capacity(double temperature) => _coupling.VaporCapacityMultiplier
+        * 30 * Math.Exp(0.06 * (Math.Clamp(temperature, -60, 45) - 25));
 
     internal static double AquaticEvaporation(double capacity, double vapor, float deepOcean, float shallowOcean,
         float lake, float wetland, float relaxation, float dt, HadleyCoupledSettings settings)

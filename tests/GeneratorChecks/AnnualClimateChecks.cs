@@ -162,8 +162,8 @@ public static partial class WorldGenerator
             Math.Abs(wallRain - Mean(unspread, 55)) > 1)
             throw new Exception("Redirected vapor should weaken the crest rain and wet the lower windward slope without crossing the barrier.");
         Console.WriteLine($"WINDWARD mm: crest={Mean(unspread, 62):F1}->{Mean(wall, 62):F1}; lower slope={Mean(unspread, 66):F1}->{Mean(wall, 66):F1}");
-        var wetOpen = BarrierFixture(100, current with { GeneratorVersion = Version });
-        var wetWall = BarrierFixture(2800, current with { GeneratorVersion = Version });
+        var wetOpen = BarrierFixture(100, current with { GeneratorVersion = LegacyAnnualVersion });
+        var wetWall = BarrierFixture(2800, current with { GeneratorVersion = LegacyAnnualVersion });
         if (Mean(wetOpen, 55) - Mean(wetWall, 55) < downstream - wallRain - 2)
             throw new Exception("The wetter continental climate must retain the rain shadow.");
 

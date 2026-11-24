@@ -18,7 +18,7 @@ public partial class MapView
             var choice = form.FindChild("MapExtent", recursive: true, owned: false) as OptionButton;
             Require(choice is not null && choice.Selected == (int)MapExtent.World, "Novo mapa deve oferecer Mundo como padrão.");
             form.EmitSignal(ConfirmationDialog.SignalName.Confirmed);
-            Require(captured?.Generation.Extent == MapExtent.World && captured.GeneratorVersion == WorldGenerator.Version,
+            Require(captured?.Generation.Extent == MapExtent.World && captured.GeneratorVersion == WorldCreationDialog.ClimateRecipe,
                 "Criar Mundo perdeu a opção de oceano periférico.");
             WorldManifest world = captured!;
             var expected = MapDomain.ExpandedSize(256, 128);

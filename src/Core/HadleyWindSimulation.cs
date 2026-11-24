@@ -4,6 +4,9 @@ using System.Threading.Tasks;
 
 namespace Mapmaker.Core;
 
+public sealed record AtmosphericCellSettings(float HadleyStrength = 1, float FerrelStrength = 0.8f,
+    float PolarStrength = 0.6f, float TropicalEdgeDegrees = 30, float PolarEdgeDegrees = 60);
+
 public readonly record struct HadleyWindSettings(
     int MaxGridWidth = 128, int MaxGridHeight = 64, int Iterations = 80, float TimeStep = 0.25f,
     float PressureForce = 0.62f, float CoriolisStrength = 0.95f, float ThermalContrast = 0.22f,
@@ -11,7 +14,7 @@ public readonly record struct HadleyWindSettings(
     float VorticityConfinement = 0.16f, float PressureCoupling = 0.28f,
     float OceanDrag = 0.045f, float LandDrag = 0.085f, float MountainDrag = 0.22f, float Diffusion = 0.04f,
     float VerticalExchange = 0.8f, float ConvectiveLift = 0.12f, float UpperDrag = 0.02f, float LayerMixing = 0.04f,
-    bool UseZonalPressureBands = true)
+    bool UseZonalPressureBands = true, AtmosphericCellSettings? Cells = null)
 {
     // The implicit parameterless struct constructor would zero all coefficients.
     public HadleyWindSettings() : this(MaxGridWidth: 128) { }
@@ -109,7 +112,7 @@ public static class HadleyWindSimulation
         bool wrap = world.Manifest.HorizontalWrap || AnnualWind.WrapsAtlas(world);
         var terrain = new float[count]; var land = new float[count]; var forcing = new float[count];
         var slopeX = new float[count]; var slopeY = new float[count];
-        SampleTerrain(world, width, height, terrain, land, forcing, s.ThermalContrast, s.UseZonalPressureBands, cancellationToken);
+        SampleTerrain(world, width, height, terrain, land, forcing, s.ThermalContrast, s.UseZonalPressureBands, s.Cells, cancellationToken);
         float ix = width / 128f, iy = height / 64f;
         Gradient(terrain, slopeX, slopeY, width, height, wrap, ix, iy);
         var lower = new Layer(count); var upper = new Layer(count);
@@ -250,7 +253,7 @@ public static class HadleyWindSimulation
     }
 
     private static void SampleTerrain(WorldData world, int width, int height, float[] terrain, float[] land,
-        float[] forcing, float thermalContrast, bool zonalBands, CancellationToken token)
+        float[] forcing, float thermalContrast, bool zonalBands, AtmosphericCellSettings? cells, CancellationToken token)
     {
         for (int y = 0; y < height; y++)
         {
@@ -278,8 +281,9 @@ public static class HadleyWindSimulation
                 terrain[i] = sum / n * 0.65f + peak * 0.35f; land[i] = ground / n;
                 float anomaly = world.Manifest.Generation.Stage == GenerationStage.Terrain && samples > 0
                     ? Math.Clamp((temperature / n - (26 - 48 * latitude * latitude)) / 25, -1, 1) * land[i] : 0;
-                // The experimental alternative has no imposed subtropical high or subpolar low.
-                forcing[i] = -MathF.Cos((zonalBands ? 3 : 1) * MathF.PI * latitude) - anomaly * thermalContrast;
+                float circulation = cells is not null ? CellPressure(latitude * 90, cells)
+                    : -MathF.Cos((zonalBands ? 3 : 1) * MathF.PI * latitude);
+                forcing[i] = circulation - anomaly * thermalContrast;
             }
         }
     }
@@ -324,6 +328,35 @@ public static class HadleyWindSimulation
             if (!float.IsFinite(value) || value is < 0 or > 4)
                 throw new ArgumentOutOfRangeException(nameof(s), "Coeficiente atmosférico inválido.");
         if (s.Diffusion > 0.1f) throw new ArgumentOutOfRangeException(nameof(s), "Difusão acima do limite estável.");
+        if (s.Cells is AtmosphericCellSettings cells)
+        {
+            if (!s.UseZonalPressureBands || !float.IsFinite(cells.TropicalEdgeDegrees)
+                || !float.IsFinite(cells.PolarEdgeDegrees) || cells.TropicalEdgeDegrees is < 10 or > 45
+                || cells.PolarEdgeDegrees < cells.TropicalEdgeDegrees + 10 || cells.PolarEdgeDegrees > 80)
+                throw new ArgumentOutOfRangeException(nameof(s), "Transições das três células inválidas.");
+            foreach (float strength in new[] { cells.HadleyStrength, cells.FerrelStrength, cells.PolarStrength })
+                if (!float.IsFinite(strength) || strength is < 0 or > 2)
+                    throw new ArgumentOutOfRangeException(nameof(s), "Intensidade das células inválida.");
+        }
+    }
+
+    internal static float CellPressure(float absoluteLatitudeDegrees, AtmosphericCellSettings cells)
+    {
+        float latitude = Math.Clamp(absoluteLatitudeDegrees, 0, 90);
+        float subtropical = 2 * cells.HadleyStrength;
+        float subpolar = subtropical - 2 * cells.FerrelStrength;
+        float pole = subpolar + 2 * cells.PolarStrength;
+        // Remove the latitude-averaged offset so cell strength does not add a uniform vertical bias.
+        float mean = (cells.HadleyStrength * cells.TropicalEdgeDegrees
+            + (subtropical + subpolar) * 0.5f * (cells.PolarEdgeDegrees - cells.TropicalEdgeDegrees)
+            + (subpolar + pole) * 0.5f * (90 - cells.PolarEdgeDegrees)) / 90;
+        if (latitude <= cells.TropicalEdgeDegrees)
+            return Blend(0, subtropical, latitude / cells.TropicalEdgeDegrees) - mean;
+        if (latitude <= cells.PolarEdgeDegrees)
+            return Blend(subtropical, subpolar, (latitude - cells.TropicalEdgeDegrees) / (cells.PolarEdgeDegrees - cells.TropicalEdgeDegrees)) - mean;
+        return Blend(subpolar, pole, (latitude - cells.PolarEdgeDegrees) / (90 - cells.PolarEdgeDegrees)) - mean;
+
+        static float Blend(float a, float b, float t) => a + (b - a) * (0.5f - 0.5f * MathF.Cos(MathF.PI * t));
     }
 
     internal static float SampleGrid(float[] values, int width, int height, bool wrap, float x, float y)

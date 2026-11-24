@@ -82,9 +82,25 @@ public sealed class WorldData
     public TectonicReference? Tectonics { get; internal set; }
     public GeographicRegions? Geography { get; internal set; }
     internal bool GeographyDirty { get; set; }
-    public void InvalidateGeography() => GeographyDirty = true;
+    public void InvalidateGeography() { GeographyDirty = true; ClimateWind = null; ClimateHumidity = null; }
     // The sea level is derived from the manifest and recalibrated on demand after opening a save.
     internal float GeneratedSeaLevel { get; set; } = float.NaN;
+    internal HadleyWindField? ClimateWind { get; set; }
+    internal float[]? ClimateHumidity { get; set; }
+
+    // Atmospheric solvers read only the supplied terrain and temperature arrays; the other layers remain shared.
+    private WorldData(WorldData source, WaterType[] water, short[] elevation, short[] temperature)
+    {
+        Manifest = source.Manifest; Domain = source.Domain;
+        Water = water; Elevation = elevation; Temperature = temperature;
+        Relief = source.Relief; Biomes = source.Biomes; Landforms = source.Landforms;
+        Features = source.Features; Rainfall = source.Rainfall; RoadEdges = source.RoadEdges;
+        RiverEdges = source.RiverEdges; Flags = source.Flags; LockMask = source.LockMask;
+        SparseEntities = source.SparseEntities; Tectonics = source.Tectonics;
+    }
+
+    internal WorldData ClimateView(WaterType[] water, short[] elevation, short[] temperature)
+        => new(this, water, elevation, temperature);
 
     public WorldData(WorldManifest manifest)
     {
@@ -116,6 +132,10 @@ public sealed class WorldData
 
     public static void Validate(WorldManifest manifest)
     {
+        if (manifest.GeneratorVersion == 68)
+            throw new ArgumentException("A receita experimental v68 de vegetação foi removida. Use a build Alpha 2.0.5 para abrir esse experimento.");
+        if (manifest.GeneratorVersion < 1 || manifest.GeneratorVersion > WorldGenerator.TerrainRainVersion)
+            throw new ArgumentException("Versão do gerador não suportada.");
         if (manifest.Width is < 32 or > MaxWidth || manifest.Height is < 32 or > MaxHeight)
             throw new ArgumentException("Dimensões do mundo fora do intervalo suportado.");
         if (string.IsNullOrWhiteSpace(manifest.WorldName) || manifest.WorldName.Length > 120 ||
@@ -126,6 +146,9 @@ public sealed class WorldData
             || options.TemperatureOffsetC is < -20 or > 20
             || options.PrecipitationOffsetPercent is < -50 or > 50)
             throw new ArgumentException("Configuração de geração inválida.");
+        if (WorldGenerator.UsesHadleyClimate(manifest)
+            && (options.Algorithm != TerrainAlgorithm.ContinentalSculpt || options.PolarOceanRows != 0))
+            throw new ArgumentException("O clima Hadley requer escultura continental sem extensão polar legada.");
         int polarRows = options.PolarOceanRows;
         int centralHeight = manifest.Height - 2 * polarRows;
         bool atlas = manifest.GeneratorVersion >= 37 && options.Extent == MapExtent.World;
@@ -154,6 +177,8 @@ public sealed class WorldData
     internal WorldData CreateEditCopy()
     {
         var copy = new WorldData(Manifest) { SparseEntities = SparseEntities, Tectonics = Tectonics, GeneratedSeaLevel = GeneratedSeaLevel };
+        copy.ClimateWind = ClimateWind;
+        copy.ClimateHumidity = ClimateHumidity;
         copy.Geography = Geography?.Copy(); copy.GeographyDirty = GeographyDirty;
         Elevation.CopyTo(copy.Elevation, 0);
         Water.CopyTo(copy.Water, 0);

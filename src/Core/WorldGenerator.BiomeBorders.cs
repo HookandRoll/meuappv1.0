@@ -24,7 +24,7 @@ public static partial class WorldGenerator
             if (n < 0 || area.Water[n] != WaterType.None || source[n] == source[i] || source[n] == BiomeType.Beach) return;
             var biome = source[n];
             bool fits = biome == BiomeType.Alpine ? area.Elevation[i] >= (version >= 46 ? 3800 : 2100) && area.Temperature[i] <= 55
-                : FitsBiomeClimate(biome, area.Temperature[i], area.Rainfall[i]);
+                : FitsBiomeClimate(biome, area.Temperature[i], area.Rainfall[i], area.GeneratorVersion);
             if (fits) area.Biomes[i] = biome;
         }, null, GenerationStep.Biomes, 0, 100);
     }

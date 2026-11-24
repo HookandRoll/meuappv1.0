@@ -97,7 +97,7 @@ public partial class MapView
             for (int pass = 0; pass < 3; pass++)
             for (int layer = 0; layer < Layers.Length; layer++)
             {
-                timer.Restart(); SetLayer(layer); _layerSelect.Select(layer); await NextDraw();
+                timer.Restart(); SetLayer(LayerIds[layer]); _layerSelect.Select(layer); await NextDraw();
                 layerTimes[layer] = Math.Max(layerTimes[layer], timer.Elapsed.TotalMilliseconds);
                 slowestLayer = Math.Max(slowestLayer, layerTimes[layer]);
             }

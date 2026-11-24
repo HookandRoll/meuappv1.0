@@ -9,24 +9,36 @@ public static partial class WorldGenerator
             ? (temperature <= -55 ? BiomeType.Tundra : BiomeType.Steppe)
             : biome;
 
+    private static BiomeType LimitDryBiomeClimate(BiomeType biome, short temperature, ushort rain, int version)
+    {
+        biome = LimitColdDesert(biome, temperature, version);
+        if (version < TerrainRainVersion) return biome;
+        if ((biome is BiomeType.Desert or BiomeType.Badlands) && rain >= 150)
+            biome = temperature is >= 120 and < 225 && rain < 680 ? BiomeType.Shrubland
+                : rain < 480 ? BiomeType.Steppe : temperature >= 200 ? BiomeType.Savanna : BiomeType.Grassland;
+        if (biome == BiomeType.Grassland && temperature >= 200) return BiomeType.Savanna;
+        if (biome == BiomeType.Savanna && temperature < 200) return BiomeType.Grassland;
+        return biome;
+    }
+
     private static bool ProtectedHabitat(BiomeType biome) => biome is BiomeType.None or BiomeType.Beach or BiomeType.Alpine or
         BiomeType.Glacier or BiomeType.Mangrove or BiomeType.Swamp or BiomeType.Bog or BiomeType.Oasis or BiomeType.Volcanic or BiomeType.SaltFlat;
-    private static BiomeType ChooseExpandedBiome(short h, short t, ushort p, int x, int y, int width, int height, bool wrap, uint seed, bool forests = true)
+    private static BiomeType ChooseExpandedBiome(short h, short t, ushort p, int x, int y, int width, int height, bool wrap, uint seed, bool forests = true, int version = BalancedRainVersion)
     {
         float region = TerrainNoise(x / (float)height, y / (float)height, 9, width / (float)height, wrap, seed ^ 0x719A35CDu);
         int alpine = 3800 + (int)(200 * region);
         if (h >= alpine && t <= 35) return BiomeType.Alpine;
         if (t <= -55) return BiomeType.Tundra;
         if (t <= 45 && p >= 400 && forests) return BiomeType.Taiga;
-        if (p < 260) return BiomeType.Desert;
-        if (t is >= 120 and < 225 && p is >= 360 and < 680 && region > 0.46f) return BiomeType.Shrubland;
+        if (p < (version >= TerrainRainVersion ? 150 : 260)) return BiomeType.Desert;
+        if (t is >= 120 and < 225 && p >= (version >= TerrainRainVersion ? 150 : 360) && p < 680 && region > 0.46f) return BiomeType.Shrubland;
         if (p < 480) return BiomeType.Steppe;
         if (t >= 225 && p >= 1550 && forests) return BiomeType.Rainforest;
         if (t is > 45 and < 225 && p >= 1850 && forests) return BiomeType.TemperateRainforest;
         if (t >= 200 && p >= 1050 && forests) return BiomeType.SeasonalForest;
         if (t >= 200 && p < 1050) return BiomeType.Savanna;
         if (t > 45 && p >= 1000 && forests) return BiomeType.TemperateForest;
-        return BiomeType.Grassland;
+        return version >= TerrainRainVersion && t >= 200 ? BiomeType.Savanna : BiomeType.Grassland;
     }
 
     private static void ApplyContextBiomes(WorldData world, WorldRegion region, bool updateFeatures, bool updateBiomes = true,
@@ -48,7 +60,7 @@ public static partial class WorldGenerator
             var features = world.Features[i] & ~(GeographicFeatures.Canyon | GeographicFeatures.BadlandRocks);
             if (world.Manifest.GeneratorVersion >= 47 && biome == BiomeType.Badlands)
                 biome = ChooseExpandedBiome((short)h, (short)t, (ushort)p, i % world.Width, i / world.Width,
-                    world.Width, world.Height, world.Manifest.HorizontalWrap, seed);
+                    world.Width, world.Height, world.Manifest.HorizontalWrap, seed, version: world.Manifest.GeneratorVersion);
             if (ice?.IsPolar(i) ?? false) biome = BiomeType.Glacier;
             else if (biome != BiomeType.Volcanic)
             {
@@ -99,13 +111,13 @@ public static partial class WorldGenerator
                 else if (h <= 260 && t > 55 && IsSwampMargin(world, i)) biome = BiomeType.Swamp;
                 else if (h <= 260 && t is > -55 and <= 55 && fresh && flat && p + moisture >= 850 && field > 0.3f) biome = BiomeType.Bog;
                 else if (flat && enclosed && !fresh && p < 280 && t > 45 && higher == 6 && field > 0.6f) biome = BiomeType.SaltFlat;
-                else if (p < 350 && eroded && t > -55 && field > 0.48f) biome = BiomeType.Badlands;
+                else if (p < (world.Manifest.GeneratorVersion >= TerrainRainVersion ? 150 : 350) && eroded && t > -55 && field > 0.48f) biome = BiomeType.Badlands;
                 else if (moisture > 0 && (biome is BiomeType.Desert or BiomeType.Steppe or BiomeType.Shrubland or BiomeType.Grassland or BiomeType.Savanna))
                 {
                     var dry = ChooseExpandedBiome((short)h, (short)t, (ushort)p, i % world.Width, i / world.Width,
-                        world.Width, world.Height, world.Manifest.HorizontalWrap, seed);
+                        world.Width, world.Height, world.Manifest.HorizontalWrap, seed, version: world.Manifest.GeneratorVersion);
                     var wet = ChooseExpandedBiome((short)h, (short)t, (ushort)Math.Min(ushort.MaxValue, p + moisture),
-                        i % world.Width, i / world.Width, world.Width, world.Height, world.Manifest.HorizontalWrap, seed);
+                        i % world.Width, i / world.Width, world.Width, world.Height, world.Manifest.HorizontalWrap, seed, version: world.Manifest.GeneratorVersion);
                     if (dry != wet) biome = wet;
                 }
                 if (world.RiverEdges[i] != 0 && h >= 600 && p < 1100 && higher >= 2) features |= GeographicFeatures.Canyon;
@@ -154,11 +166,11 @@ public static partial class WorldGenerator
                 if (own < 3 || regional < 2)
                     biome = world.Biomes[i] == BiomeType.Badlands
                         ? ChooseExpandedBiome(world.Elevation[i], world.Temperature[i], world.Rainfall[i], i % world.Width, i / world.Width,
-                            world.Width, world.Height, world.Manifest.HorizontalWrap, seed)
+                            world.Width, world.Height, world.Manifest.HorizontalWrap, seed, version: world.Manifest.GeneratorVersion)
                         : world.Biomes[i];
             }
             var feature = updateFeatures ? Evaluate(i).Features : GeographicFeatures.None;
-            biome = LimitColdDesert(biome, world.Temperature[i], world.Manifest.GeneratorVersion);
+            biome = LimitDryBiomeClimate(biome, world.Temperature[i], world.Rainfall[i], world.Manifest.GeneratorVersion);
             if (updateBiomes && (locks & HexLocks.Biome) == 0) world.Biomes[i] = biome;
             if (updateFeatures && (locks & HexLocks.Features) == 0)
             {

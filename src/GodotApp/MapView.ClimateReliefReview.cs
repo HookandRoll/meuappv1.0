@@ -62,7 +62,7 @@ public partial class MapView
                     InstallWorld(world); RefreshInterface();
                     foreach (int layer in new[] { 0, 1, 3, 4 })
                     {
-                        SetLayer(layer); _layerSelect.Select(layer); await NextDraw(); await NextDraw();
+                        SetLayer(layer); _layerSelect.Select(LayerMenuIndex(layer)); await NextDraw(); await NextDraw();
                         using Image image = GetViewport().GetTexture().GetImage();
                         Require(image.SavePng(Path.Combine(output, $"{width}-seed-{seed}-v{version}-layer-{layer}.png")) == Error.Ok, "Captura climática falhou.");
                     }

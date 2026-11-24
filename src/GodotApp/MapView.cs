@@ -8,12 +8,17 @@ namespace Mapmaker.GodotApp;
 
 public partial class MapView : Node2D
 {
+    private const int HumidityLayer = 11;
+    private static readonly int[] LayerIds = { 0, 4, 1, 2, HumidityLayer, 3, 7, 6, 9, 10 };
     private const int WindLayer = 8;
     private const int HadleyLayer = 9;
     private const int HadleyUpperLayer = 10;
     private static bool IsHadleyLayer(int layer) => layer is HadleyLayer or HadleyUpperLayer;
+    private bool UsesAtmosphericWindLayer(int layer) => IsHadleyLayer(layer)
+        || (layer == WindLayer && _world is not null && WorldGenerator.UsesHadleyClimate(_world.Manifest));
     private static readonly string[] Layers =
-        { "Terreno", "Elevação", "Temperatura", "Chuva", "Biomas", "Locks", "Tectônica", "Regiões", "Ventos", "Hadley: solo", "Hadley: altitude" };
+        { "Terreno", "Biomas", "Elevação", "Temperatura", "Umidade", "Chuvas", "Regional", "Tectônicas", "Ventos Baixos", "Ventos Altos" };
+    private int LayerMenuIndex(int layer) => _layerSelect.GetItemIndex(layer);
     private static readonly Color Ink = new("#ebe2cc");
     private static readonly Color Muted = new("#a89b84");
     private Node2D _map = null!;
@@ -69,7 +74,9 @@ public partial class MapView : Node2D
 
         string[] args = OS.GetCmdlineUserArgs();
         string? benchmarkSize = Array.Find(args, arg => arg.StartsWith("--benchmark-size="));
-        if (Array.IndexOf(args, "--hadley-orographic-comparison") >= 0)
+        if (Array.IndexOf(args, "--hadley-main-review") >= 0)
+            Callable.From(RunHadleyMainReview).CallDeferred();
+        else if (Array.IndexOf(args, "--hadley-orographic-comparison") >= 0)
             Callable.From(() => RunHadleyReplenishmentComparison(orographic: true)).CallDeferred();
         else if (Array.IndexOf(args, "--hadley-replenishment-comparison") >= 0)
             Callable.From(() => RunHadleyReplenishmentComparison()).CallDeferred();
@@ -159,6 +166,7 @@ public partial class MapView : Node2D
         _editorPreview?.Dispose();
         _lockTexture?.Dispose();
         _textures?.Dispose();
+        _humidityTexture?.Dispose(); _humidityRows?.Dispose();
         _regionTexture?.Dispose();
         _artwork?.Dispose();
     }
@@ -263,27 +271,27 @@ public partial class MapView : Node2D
         _windOverlay.QueueRedraw();
         InvalidateHadleyWind();
         _hadleyOverlay.Domain = world.Domain;
-        _layerSelect.SetItemDisabled(WindLayer, stage < GenerationStage.Terrain || world.Manifest.GeneratorVersion < 55);
-        _layerSelect.SetItemTooltip(WindLayer, "Direção predominante do vento médio anual. Clique em um hex para ver os pesos.");
-        _layerSelect.SetItemDisabled(HadleyLayer, stage < GenerationStage.Relief);
-        _layerSelect.SetItemDisabled(HadleyUpperLayer, stage < GenerationStage.Relief);
-        _layerSelect.SetItemTooltip(HadleyLayer, "Vento próximo ao solo, com atrito e interação com o relevo.");
-        _layerSelect.SetItemTooltip(HadleyUpperLayer, "Vento em altitude, acoplado à superfície por subida e descida de ar.");
-        if (IsHadleyLayer(_layer))
-            RefreshHadleyWind();
+        _layerSelect.SetItemDisabled(LayerMenuIndex(HadleyLayer), stage < GenerationStage.Relief);
+        _layerSelect.SetItemDisabled(LayerMenuIndex(HadleyUpperLayer), stage < GenerationStage.Relief);
+        _layerSelect.SetItemDisabled(LayerMenuIndex(HumidityLayer), stage < GenerationStage.Terrain || !WorldGenerator.UsesHadleyClimate(world.Manifest));
+        _layerSelect.SetItemTooltip(LayerMenuIndex(HadleyLayer), "Vento próximo ao solo: atrito, relevo e transporte de umidade.");
+        _layerSelect.SetItemTooltip(LayerMenuIndex(HadleyUpperLayer), "Vento em altitude: transporte e troca de ar com a camada baixa.");
+        _layerSelect.SetItemTooltip(LayerMenuIndex(HumidityLayer), "Umidade relativa média do ar próximo ao solo: vermelho 0%, claro 50%, azul 100%. Não é chuva acumulada.");
+        BindHumidity();
+        if (UsesAtmosphericWindLayer(_layer) || _layer == HumidityLayer) RefreshHadleyWind();
         _regionLabels.World=world;
-        _layerSelect.SetItemDisabled(7,stage==GenerationStage.Blank);
+        _layerSelect.SetItemDisabled(LayerMenuIndex(7),stage==GenerationStage.Blank);
         if(_layer==7)RefreshRegions();
         _tectonicOverlay.Reference = world.Tectonics;
         _tectonicOverlay.SymbolSize = Math.Max(2, world.Height / 80f);
         _tectonicOverlay.MapHeight = world.Height * 1.5f;
         _tectonicOverlay.QueueRedraw();
-        _layerSelect.SetItemDisabled(6, world.Tectonics is null);
-        _layerSelect.SetItemTooltip(6, "Referência original: flechas = movimento; círculos = afastamento; X = colisão. Não muda ao editar o terreno.");
-        _layerSelect.SetItemDisabled(1, stage < GenerationStage.Relief);
+        _layerSelect.SetItemDisabled(LayerMenuIndex(6), world.Tectonics is null);
+        _layerSelect.SetItemTooltip(LayerMenuIndex(6), "Referência original: flechas = movimento; círculos = afastamento; X = colisão. Não muda ao editar o terreno.");
+        _layerSelect.SetItemDisabled(LayerMenuIndex(1), stage < GenerationStage.Relief);
         for (int i = 2; i <= 4; i++)
-            _layerSelect.SetItemDisabled(i, stage < GenerationStage.Terrain);
-        if (_layerSelect.IsItemDisabled(_layer))
+            _layerSelect.SetItemDisabled(LayerMenuIndex(i), stage < GenerationStage.Terrain);
+        if (_layerSelect.IsItemDisabled(LayerMenuIndex(_layer)))
         {
             _layerSelect.Select(0);
             SetLayer(0);
@@ -291,6 +299,7 @@ public partial class MapView : Node2D
         _performance.Text = $"{world.Width} × {world.Height}";
         ResetEditor(world);
         FitMap();
+        SetLayer(_layer);
     }
 
     private void ReplaceTerrainTextures(WorldData world, GlobalDataTextures.Buffers? buffers)
@@ -353,7 +362,7 @@ public partial class MapView : Node2D
             return;
         }
         Vector2I offset = _selected;
-        if (_layer == WindLayer)
+        if (_layer == WindLayer && !UsesAtmosphericWindLayer(_layer))
         {
             string edges = AnnualWind.WrapsAtlas(world) ? "Leste e oeste conectados"
                 : world.Manifest.HorizontalWrap
@@ -369,14 +378,19 @@ public partial class MapView : Node2D
             }
             return;
         }
-        if (IsHadleyLayer(_layer))
+        if (_layer == HumidityLayer)
+        {
+            RefreshHumidityInspection(world, offset);
+            return;
+        }
+        if (UsesAtmosphericWindLayer(_layer))
         {
             RefreshHadleyWind();
             if (offset.X < 0 || _hadleyWind is null)
             {
-                _inspection.Text = _hadleyError is not null ? "Não foi possível calcular a circulação Hadley."
-                    : _hadleyWind is null ? "Calculando circulação Hadley em duas camadas…"
-                    : "Hadley: laranja = ar subindo; azul = ar descendo. Clique em um hex para inspecionar.";
+                _inspection.Text = _hadleyError is not null ? "Não foi possível calcular a circulação atmosférica."
+                    : _hadleyWind is null ? "Calculando circulação atmosférica em duas camadas…"
+                    : "Circulação: laranja = ar subindo; azul = ar descendo. Clique em um hex para inspecionar.";
                 _inspection.TooltipText = _hadleyError ?? "Camadas de superfície e altitude com transferência de massa e movimento.";
             }
             else
@@ -492,20 +506,20 @@ public partial class MapView : Node2D
 
     private void SetLayer(int index)
     {
-        bool refreshWindInspection = _layer == WindLayer || index == WindLayer || IsHadleyLayer(_layer) || IsHadleyLayer(index);
+        bool refreshWindInspection = _layer == HumidityLayer || index == HumidityLayer || _layer == WindLayer || index == WindLayer || IsHadleyLayer(_layer) || IsHadleyLayer(index);
         _layer = index;
-        _layerSelect.Select(index);
+        _layerSelect.Select(LayerMenuIndex(index == WindLayer ? HadleyLayer : index));
         _regionLabels.Visible=index==7;
         if(index==7)RefreshRegions();
-        _material.SetShaderParameter("layer", IsHadleyLayer(index) ? WindLayer : index == 6 ? 0 : index);
+        _material.SetShaderParameter("layer", UsesAtmosphericWindLayer(index) ? WindLayer : index == 6 ? 0 : index);
         _tectonicOverlay.Visible = index == 6;
-        _windOverlay.Visible = index == WindLayer;
+        _windOverlay.Visible = index == WindLayer && !UsesAtmosphericWindLayer(index);
         if (_windOverlay.Visible)
             _windOverlay.QueueRedraw();
-        _hadleyOverlay.Visible = IsHadleyLayer(index);
+        _hadleyOverlay.Visible = UsesAtmosphericWindLayer(index);
         _hadleyOverlay.Layer = index == HadleyUpperLayer ? HadleyAtmosphereLayer.Upper : HadleyAtmosphereLayer.Surface;
         _hadleyOverlay.QueueRedraw();
-        if (_hadleyOverlay.Visible)
+        if (_hadleyOverlay.Visible || index == HumidityLayer)
             RefreshHadleyWind();
         _riverOverlay.Visible = index == 0 || index == 6;
         _volcanoOverlay.Visible = _showVolcanoes && (index == 0 || index == 6);
@@ -535,17 +549,33 @@ public partial class MapView : Node2D
             _hadleyOverlay.QueueRedraw();
             return;
         }
+        if (world.ClimateWind is HadleyWindField cached && (_layer != HumidityLayer || world.ClimateHumidity is not null))
+        {
+            _hadleyWorld = world; _hadleyWind = cached; _hadleyOverlay.Field = cached;
+            _hadleyOverlay.QueueRedraw();
+            return;
+        }
         if (_hadleyCancellation is not null || _hadleyError is not null) return;
         var cancellation = new CancellationTokenSource();
         _hadleyCancellation = cancellation; _hadleyWorld = world;
         try
         {
-            var field = await Task.Run(() => HadleyWindSimulation.Simulate(world, cancellationToken: cancellation.Token));
+            var result = await Task.Run(() => WorldGenerator.UsesHadleyClimate(world.Manifest)
+                && world.Manifest.Generation.Stage == GenerationStage.Terrain
+                ? HadleyCoupledClimateSimulation.Simulate(world, WorldGenerator.HadleySettingsFor(world),
+                    cancellationToken: cancellation.Token)
+                : (Wind: HadleyWindSimulation.Simulate(world,
+                    WorldGenerator.UsesHadleyClimate(world.Manifest) ? WorldGenerator.HadleySettingsFor(world) : null,
+                    cancellation.Token), Moisture: (HadleyMoistureResult?)null));
             if (_hadleyClosed || cancellation.IsCancellationRequested || !ReferenceEquals(_world, world)) return;
+            var field = result.Wind;
             _hadleyWind = field;
+            world.ClimateHumidity = result.Moisture?.Coupled?.RelativeHumidity;
+            if (WorldGenerator.UsesHadleyClimate(world.Manifest)) world.ClimateWind = field;
+            BindHumidity();
             _hadleyOverlay.Field = field;
             _hadleyOverlay.QueueRedraw();
-            if (IsHadleyLayer(_layer)) RefreshInspection();
+            if (UsesAtmosphericWindLayer(_layer) || _layer == HumidityLayer) RefreshInspection();
         }
         catch (OperationCanceledException) { }
         catch (Exception error)
@@ -553,7 +583,7 @@ public partial class MapView : Node2D
             if (!_hadleyClosed && !cancellation.IsCancellationRequested && ReferenceEquals(_world, world))
             {
                 _hadleyError = error.Message;
-                if (IsHadleyLayer(_layer)) RefreshInspection();
+                if (UsesAtmosphericWindLayer(_layer) || _layer == HumidityLayer) RefreshInspection();
             }
         }
         finally

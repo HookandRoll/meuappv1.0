@@ -669,7 +669,7 @@ public partial class MapView
                     }
                 });
                 if (changed)
-                    EditChanged(updateTerrain: true, updateLocks: false, updateClimate: true);
+                    EditChanged(updateTerrain: true, updateLocks: false, updateClimate: true, preserveClimateWind: true);
                 else
                     RefreshInspection();
             }
@@ -680,8 +680,10 @@ public partial class MapView
         });
     }
 
-    private void EditChanged(bool updateTerrain, bool updateLocks, bool previewReady = false, bool updateClimate = false)
+    private void EditChanged(bool updateTerrain, bool updateLocks, bool previewReady = false, bool updateClimate = false,
+        bool preserveClimateWind = false)
     {
+        if ((updateTerrain || updateClimate) && !preserveClimateWind && _world is not null) { _world.ClimateWind = null; _world.ClimateHumidity = null; }
         if (updateTerrain || updateClimate) InvalidateHadleyWind();
         if(updateTerrain && _world is not null) { _world.GeographyDirty=true;if(_layer==7)RefreshRegions(); }
         _riverOverlay.World = _world;

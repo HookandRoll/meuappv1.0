@@ -9,7 +9,20 @@ public readonly record struct GenerationProgress(GenerationStep Step, int Percen
 
 public static partial class WorldGenerator
 {
-    public const int Version = 63;
+    public const int LegacyAnnualVersion = 63;
+    public const int Version = TerrainRainVersion;
+    public const int HadleyVersion = 64;
+    public const int ThreeCellVersion = 65;
+    public const int MoistureTransportVersion = 66;
+    public const int CloudTransportVersion = 67;
+    public const int RainRecyclingVersion = 69;
+    public const int HumidityBoostVersion = 70;
+    public const int HexRainSpreadVersion = 71;
+    public const int BalancedRainVersion = 72;
+    public const int TerrainRainVersion = 73;
+    public const double HadleyRainScale = 10.5;
+    public static bool UsesHadleyClimate(WorldManifest manifest) => manifest.GeneratorVersion is (>= HadleyVersion and <= CloudTransportVersion) or (>= RainRecyclingVersion and <= TerrainRainVersion);
+    public static bool UsesThreeCellCirculation(WorldManifest manifest) => manifest.GeneratorVersion is (>= ThreeCellVersion and <= CloudTransportVersion) or (>= RainRecyclingVersion and <= TerrainRainVersion);
     internal const short SculptedStraitDepth = -137;
     private const int HistogramSize = 2048;
     // Two forest growth passes read up to two hexes away each. Cleanup reads one more.
@@ -143,7 +156,7 @@ public static partial class WorldGenerator
         double? experimentalRainScale = null)
     {
         WorldManifest manifest = world.Manifest;
-        if (manifest.GeneratorVersion is < 4 or > Version)
+        if (manifest.GeneratorVersion is < 4 or > TerrainRainVersion or 68)
             throw new ArgumentException($"Versão do gerador não suportada: {manifest.GeneratorVersion}.", nameof(manifest));
 
         GenerationSettings settings = manifest.Generation;
@@ -300,6 +313,8 @@ public static partial class WorldGenerator
 
         if (experimentalClimate is not null)
             experimentalClimate(ApplyHadleyClimateExperiment(world, area, seed, progress, experimentalRainTarget, experimentalRainScale));
+        else if (UsesHadleyClimate(manifest))
+            ApplyHadleyClimateExperiment(world, area, seed, progress, null, HadleyRainScale);
         else if (manifest.GeneratorVersion >= 55)
             ApplyAnnualClimate(world, area, seed, progress);
         else
@@ -425,7 +440,7 @@ public static partial class WorldGenerator
             }
             area.Biomes[i] = manifest.GeneratorVersion >= 46
                 ? LimitColdDesert(ChooseExpandedBiome(area.Elevation[i], temperature, rainfall, area.WorldColumn(col),
-                    area.WorldRow(row), world.Width, world.Height, manifest.HorizontalWrap, seed, !openPlains[i]),
+                    area.WorldRow(row), world.Width, world.Height, manifest.HorizontalWrap, seed, !openPlains[i], manifest.GeneratorVersion),
                     area.Temperature[i], manifest.GeneratorVersion)
                 : ChooseBiome(elevation, temperature, rainfall, forests: !openPlains[i]);
         }, progress, GenerationStep.Biomes, 0, beachCandidates is null ? 65 : 59);
@@ -446,7 +461,7 @@ public static partial class WorldGenerator
                 if (area.Water[i] != WaterType.None) return;
                 if (polarIce is not null && polarIce.IsPolar(cell)) area.Biomes[i] = BiomeType.Glacier;
                 else if (volcanoes is not null && volcanoes[cell] != 0) area.Biomes[i] = BiomeType.Volcanic;
-                else area.Biomes[i] = LimitColdDesert(area.Biomes[i], area.Temperature[i], manifest.GeneratorVersion);
+                else area.Biomes[i] = LimitDryBiomeClimate(area.Biomes[i], area.Temperature[i], area.Rainfall[i], manifest.GeneratorVersion);
             }, null, GenerationStep.Biomes, 0, 100);
     }
 
@@ -609,7 +624,7 @@ public static partial class WorldGenerator
         {
             if (Biomes.IsForest(grown[i]) && ForestNeighbors(area, grown, area.WorldHex(col, row)) == 0)
                 area.Biomes[i] = version >= 46 ? ChooseExpandedBiome(area.Elevation[i], area.Temperature[i], area.Rainfall[i],
-                    area.WorldColumn(col), area.WorldRow(row), area.WorldWidth, area.WorldHeight, area.Wrap, seed, false)
+                    area.WorldColumn(col), area.WorldRow(row), area.WorldWidth, area.WorldHeight, area.Wrap, seed, false, version)
                     : ChooseBiome(area.Elevation[i], area.Temperature[i], area.Rainfall[i], forests: false);
         }, progress, GenerationStep.Biomes, 93, end);
     }
@@ -634,7 +649,7 @@ public static partial class WorldGenerator
                 return;
 
             target[i] = version >= 46 ? ChooseExpandedBiome(area.Elevation[i], temperature, rain,
-                area.WorldColumn(col), area.WorldRow(row), area.WorldWidth, area.WorldHeight, area.Wrap, seed)
+                area.WorldColumn(col), area.WorldRow(row), area.WorldWidth, area.WorldHeight, area.Wrap, seed, version: version)
                 : temperature <= 45 ? BiomeType.Taiga
                 : temperature >= 225 && rain >= 1360 ? BiomeType.Rainforest : BiomeType.TemperateForest;
         }, progress, GenerationStep.Biomes, from, to);
