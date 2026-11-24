@@ -19,7 +19,7 @@ public partial class MapView
         var results = new List<object>();
         var algorithms = new[]
         {
-            (TerrainAlgorithm.ContinentalSculpt, "azgaar", "Escultura continental (estilo Azgaar)"),
+            (TerrainAlgorithm.ContinentalSculpt, "continental-sculpt", "Escultura continental"),
             (TerrainAlgorithm.Fractal, "fractal", "Ruído fractal (fBm)"),
             (TerrainAlgorithm.LandmassCenters, "centros", "Centros de massas de terra")
         };

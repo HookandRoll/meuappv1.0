@@ -179,6 +179,7 @@ public partial class MapView
         _regionTexture = null;
         if (_layer == 7) RefreshRegions();
         _riverOverlay.World = source;
+        _roadOverlay.SetWorld(source);
         _volcanoOverlay.SetWorld(source, _artwork);
         _history = _sourceHistory;
         _dirty = _sourceDirty;
@@ -311,6 +312,7 @@ public partial class MapView
     {
         Vector2I offset = PickAt(position);
         int section = _editorPanel.Visible ? _editorPanel.ActiveSection : 0;
+        if (section == 4) { StartNetwork(offset); return; }
         if (section != 1)
         {
             SelectHex(offset);
@@ -350,6 +352,11 @@ public partial class MapView
     private bool ContinueGesture(Vector2 position)
     {
         Rect2 canvas = MapCanvasRect();
+        if (_networkDrawing)
+        {
+            if (canvas.HasPoint(position)) ContinueNetwork(PickAt(position));
+            return true;
+        }
         if (_dragStart is Vector2I start && _world is WorldData world)
         {
             Vector2I end = PickAt(position.Clamp(canvas.Position, canvas.End));
@@ -531,6 +538,7 @@ public partial class MapView
 
     private void FinishGesture()
     {
+        FinishNetwork();
         if (_dragStart.HasValue)
         {
             _dragStart = null;
@@ -629,7 +637,10 @@ public partial class MapView
             return;
         FinishGesture();
         if (redo ? _history.Redo() : _history.Undo())
+        {
+            _roadOverlay.SetWorld(_world, force: true);
             EditChanged(updateTerrain: true, updateLocks: true, updateClimate: true);
+        }
     }
 
     private void RequestRegeneration()
@@ -687,6 +698,7 @@ public partial class MapView
         if (updateTerrain || updateClimate) InvalidateHadleyWind();
         if(updateTerrain && _world is not null) { _world.GeographyDirty=true;if(_layer==7)RefreshRegions(); }
         _riverOverlay.World = _world;
+        _roadOverlay.SetWorld(_world);
         _riverOverlay.QueueRedraw();
         _dirty = _initiallyDirty || _history!.Revision != _savedRevision;
         _lockSummaryDirty |= updateLocks;

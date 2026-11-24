@@ -11,8 +11,8 @@ config_version=5
 [application]
 
 config/name="Jota Fantasy Map Maker"
-config/description="Chuva em dois anéis limitada pelo relevo e biomas secos abaixo de 150 mm"
-config/version="2.1.0-alpha"
+config/description="Gerador geográfico com tectônica, clima, biomas, rios e edição de redes"
+config/version="2.2.0-alpha"
 run/main_scene="res://src/GodotApp/Map.tscn"
 config/features=PackedStringArray("4.7", "C#", "GL Compatibility")
 

@@ -1,6 +1,6 @@
 # Jota Fantasy Map Maker
 
-**Alpha 2.1 - Atmospheric Currents and Humidity**. Mapas de fantasia para RPG, com editor de terreno, tectônica, clima e rios no Godot 4 .NET.
+**Alpha 2.2 - World Geography**. Mapas de fantasia para RPG, com editor de terreno, tectônica, clima e rios no Godot 4 .NET. Esta versão encerra o escopo geográfico do M5 e inclui os ajustes de legibilidade no zoom e a edição manual de redes.
 
 Mapas novos de terreno completo usam a receita v73: circulação Hadley, Ferrel e Polar em duas camadas, transportando vapor e nuvens para produzir chuva, biomas e rios. Ventos Baixos mostra a circulação perto do solo; Ventos Altos mostra o campo em altitude. [Funcionamento das correntes e da água](docs/Correntes_Atmosfericas.md).
 
@@ -12,7 +12,7 @@ A chuva final usa 50% no hex central, 15% em cada vizinho do primeiro anel e 5% 
 
 Temperatura no formulário é um ajuste de −20 a +20 °C; precipitação varia de −50 a +50%. A latitude participa da referência térmica e da circulação, mas a antiga penalidade direta de chuva subtropical está desativada na v73. Gelo polar continua com regras próprias.
 
-[Baixe a Alpha 2.1 para Windows x64](https://github.com/HookandRoll/meuappv1.0/releases/tag/v2.1.0-alpha). [Notas da versão](RELEASE_NOTES_2.1.0.md). Saves antigos preservam suas receitas; crie um mapa novo para usar o clima atual. Vento e umidade são reconstruídos em segundo plano ao reabrir um mapa acoplado.
+[Baixe a Alpha 2.2 para Windows x64](https://github.com/HookandRoll/meuappv1.0/releases/tag/v2.2.0-alpha). [Notas da versão](RELEASE_NOTES_2.2.0.md). Saves antigos preservam suas receitas; crie um mapa novo para usar o clima atual. Vento e umidade são reconstruídos em segundo plano ao reabrir um mapa acoplado.
 
 As artes atuais têm três variações por elemento, vegetação isométrica e relevo sobreposto. Veja o [walkthrough visual](docs/Art_Walkthrough_1.1.30.md) e os [créditos das artes](THIRD_PARTY_NOTICES.md).
 
@@ -40,7 +40,7 @@ O VS Code pode abrir a pasta inteira. Também é possível compilar com `dotnet 
 - No formulário, escolha entre grade vazia, terra e água, relevo ou terreno completo com clima e biomas. Uma grade vazia pode ser preenchida depois em **Mapa → Gerar terreno**.
 - Em **Tipo de mapa**, escolha **Mundo — atlas completo** (padrão), com topo/base retos e laterais curvas, ou **Região — recorte aberto**, retangular. No Mundo, placas, continentes, ilhas, relevo, clima e rios são calculados em toda a área útil; não há um retângulo central com faixas copiadas ou continuação visual de terreno. A porcentagem de terra e mar usa os hexes úteis fora das placas polares, excluindo também os cantos fora do contorno. O número de continentes orienta a quantidade mínima de massas principais separadas por água. Arquivos antigos mantêm suas versões e sua geografia.
 - A barra de geração mostra a etapa em andamento e sua porcentagem. Os biomas usam clima e ruído em coordenadas globais, processados em chunks de 32 × 32 hexes. A camada **Terreno** suaviza as transições entre biomas terrestres. A faixa costeira usa a cor da terra vizinha e um contorno irregular sobre o oceano costeiro, que continua sendo inspecionado como água.
-- Mapas novos usam **Escultura continental (estilo Azgaar)**, com gerador v73: a distribuição de crosta das placas define terra e mar; colisões formam cordilheiras e arcos de ilhas, e afastamentos rebaixam o terreno. As costas recebem detalhes sobre essa base geológica. O número de continentes orienta as placas continentais e a separação das massas principais por água, com tamanhos diferentes. O percentual de terra é ajustado globalmente, sem cotas iguais por continente. Bacias fechadas viram lagos; relevo, latitude e transporte de umidade influenciam o clima e os biomas. Os algoritmos anteriores continuam suportados nos arquivos existentes.
+- Mapas novos usam **Escultura continental**, com gerador v73: a distribuição de crosta das placas define terra e mar; colisões formam cordilheiras e arcos de ilhas, e afastamentos rebaixam o terreno. As costas recebem detalhes sobre essa base geológica. O número de continentes orienta as placas continentais e a separação das massas principais por água, com tamanhos diferentes. O percentual de terra é ajustado globalmente, sem cotas iguais por continente. Bacias fechadas viram lagos; relevo, latitude e transporte de umidade influenciam o clima e os biomas. Os algoritmos anteriores continuam suportados nos arquivos existentes.
 - No Mundo, as placas **Ártica** e **Antártica** são obrigatórias, adicionais às placas comuns e sempre oceânicas. Cobrem o topo e a base retos com fronteiras irregulares por seed e contatos de afastamento. No gerador v46, as faixas polares também recebem ilhas e continentes de gelo como exceção à reserva oceânica. As duas placas ficam fora do total de placas comuns e dos cálculos de escala baseados nesse total; toda a faixa polar, incluindo o gelo, fica fora da base da porcentagem de terra e mar. Geleiras automáticas ficam restritas aos polos. Veja a [validação das placas polares](results/Placas_Polares_v38.md) e o [ajuste de contagem e porcentagem](results/Cotas_Polares_v39.md).
 - As duas laterais curvas do Mundo têm faixas de pequenas placas oceânicas, com limites irregulares e terreno sempre submerso para afastar as costas do contorno. Esse oceano lateral entra na porcentagem de água; apenas os polos ficam fora. Veja a [verificação das margens e da porcentagem](results/Margens_Oceanicas_v40.md).
 - Use a roda do mouse para aproximar, arraste com o botão direito ou do meio para mover e clique para inspecionar um hex.
@@ -53,6 +53,12 @@ Em desenvolvimento, o [esquema de dados v2](docs/Map_Data_Format_v2.md) separa b
 O renderer também abre um [corredor limpo ao longo dos rios](docs/River_Clearance.md), recortando a vegetação e os ícones junto ao leito, inclusive as partes das artes que vêm de hexes vizinhos. O efeito acompanha pan e zoom e não exige regenerar o mapa.
 
 Ao aproximar o zoom, a vegetação se acomoda gradualmente no canto superior esquerdo de cada hex, em uma composição mais compacta que libera o centro e a direita para detalhes. A visão afastada mantém a cobertura ampla e irregular.
+
+Na aproximação final (zoom 28–44), cerca de metade dos grupos de árvores desaparece gradualmente, com seleção estável por posição e seed. No zoom máximo, isso abre espaço para ler o terreno e os detalhes; arbustos e juncos mantêm sua cobertura. [Conferência visual e desempenho](results/Vegetacao_Zoom_M4.md).
+
+O [M4 está concluído](results/M4_Fechamento.md), assim como o [M5 no escopo geográfico ajustado](results/M5_Fechamento.md). A aba **Editar mapa → Redes** permite desenhar e apagar trechos de rios e inclui a ferramenta provisória de estradas já implementada. A edição respeita seleção e locks dos dois lados da ligação, com undo/redo, salvar e cancelar rascunho. Conectar pontos automaticamente por estradas fica para uma etapa futura. [Ferramentas e testes](results/M5_Redes_Manuais.md).
+
+Montanhas e picos usam metade das dimensões dos vulcões e diminuem gradualmente entre os zooms 12 e 22, mantendo o desenho maior à distância. As artes existentes continuam separadas da geografia e podem ser substituídas. [Comparação visual](results/Montanhas_Zoom_Metade_Vulcao.md).
 
 O [gerador v41 classifica formas geográficas por altitude e desnível](results/Relevo_Formas_Geograficas_v41.md): topos planos viram planaltos, quedas marcam serras/escarpas, e subidas identificam encostas e sopés. Pincéis de elevação/água atualizam a classificação dos vizinhos com locks e undo/redo; a regeneração oferece o campo **Forma geográfica**.
 
@@ -91,10 +97,6 @@ Ao alterar os arrays `WorldData.Water` ou `WorldData.Elevation` diretamente, cha
 
 `CompatibilityChecks` compara hashes de 48 mundos à implementação anterior às otimizações, incluindo todas as camadas, rios, regiões, ícones e texturas. O teste `--memory-atlas-only` exercita snapshots e undo/redo no tamanho máximo; `--regenerate-atlas-memory` executa duas regenerações completas do Atlas máximo e informa o pico de memória do processo.
 
-Para exportar o EXE portátil, instale os templates Windows .NET correspondentes ao Godot 4.7.2 e execute `godot --headless --path . --editor --export-release "Windows Desktop"`. O preset gera `dist/Jota-Fantasy-Map-Maker-Alpha-2.0-Wind-and-Climate-Simulation.exe`, com PCK e runtime incorporados.
-
-## Agradecimentos
-
-Agradecemos a Azgaar e a toda a equipe de colaboradores do **Fantasy Map Generator**. Suas receitas de mapas de elevação inspiraram a escultura continental do Jota Fantasy Map Maker. [Azgaar’s Fantasy Map Generator](https://github.com/Azgaar/Fantasy-Map-Generator)
+Para exportar o EXE portátil, instale os templates Windows .NET correspondentes ao Godot 4.7.2 e execute `godot --headless --path . --editor --export-release "Windows Desktop"`. O preset gera `dist/Jota-Fantasy-Map-Maker-Alpha-2.2-World-Geography.exe`, com PCK e runtime incorporados.
 
 Os testes específicos do gerador podem ser executados com `dotnet run --project tests/GeneratorChecks/GeneratorChecks.csproj` (SDK .NET 10). Eles verificam a consolidação de biomas, limites climáticos, wrap, determinismo, regeneração regional e locks.

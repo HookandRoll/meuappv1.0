@@ -202,7 +202,6 @@ Cada etapa executa separadamente, usa a `Seed`, respeita `LockMask` e opera só 
 
 O modo **Escultura continental** aplica domos, bacias, cordilheiras, vales e estreitos à grade inteira antes das etapas de relevo, clima e biomas. A regeneração regional reconstrói esse campo com a mesma seed e grava os campos gerados na região solicitada.
 
-Agradecemos a Azgaar e à equipe do **Fantasy Map Generator** pelas receitas de mapas de elevação que inspiraram este modo. [Azgaar’s Fantasy Map Generator](https://github.com/Azgaar/Fantasy-Map-Generator)
 
 ## 14. Hidrologia e rios
 
@@ -380,11 +379,19 @@ Implementar: brushes, pintura de relevo/bioma/água, ferramentas de elevação, 
 
 ### M4 — Dá para ficar bonito?
 
+**Status em 24/11/2026: concluído no tamanho de referência 1024×512.** [Relatório de fechamento](results/M4_Fechamento.md).
+
 Implementar: transições de bioma no shader, costa suavizada, modo natural (grade OFF) vs. estratégico (grade ON) e decoração de relevo/vegetação em lote.
 
 **Gate:** com a grade desligada o mapa parece uma ilustração contínua, com desempenho próximo ao do M0.
 
 ### M5 — Dá para pôr redes?
+
+**Status em 24/11/2026: concluído no escopo geográfico ajustado.** Desenho e exclusão manual de rios/estradas, locks, seleção e histórico integrados. [Entrega inicial e testes](results/M5_Redes_Manuais.md).
+
+**Ajuste de escopo em 24/11/2026:** rios existentes mantidos, incluindo o renderer de curvas. Estradas ficam adiadas até existirem pontos a conectar; a direção futura é reutilizar a infraestrutura de redes e curvas com uma lógica própria de conexão entre pontos. Estradas e comparação de um novo renderer fluvial deixam de ser bloqueios para encerrar o M5. As diferenças do contrato de regeneração regional ficam documentadas no fechamento.
+
+**Fechamento em 24/11/2026:** M5 concluído por decisão do usuário para o escopo geográfico entregue, incluindo todas as mudanças da Alpha 2.2. O gerador geográfico é considerado completo. A diferença de fallback da regeneração regional fica documentada no [relatório de fechamento](results/M5_Fechamento.md), sem reabrir a geração.
 
 Implementar: hidrologia (Priority-Flood + entidades `River` com afluentes), sincronização de `RiverEdges`, desenho/apagar de rios e estradas **por aresta**, e o renderer inicial de **peças modulares por aresta** (candidato A) com arte placeholder.
 

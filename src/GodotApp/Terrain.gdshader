@@ -43,6 +43,8 @@ uniform bool show_relief = true;
 uniform bool show_vegetation = true;
 uniform bool show_details = true;
 uniform float detail_zoom : hint_range(0.0, 1.0);
+uniform float tree_thinning : hint_range(0.0, 1.0) = 0.0;
+uniform float mountain_zoom_scale : hint_range(0.0, 1.0) = 1.0;
 uniform ivec4 selection_bounds = ivec4(-1);
 uniform ivec2 brush_center = ivec2(-1);
 uniform int brush_radius = 0;
@@ -96,6 +98,17 @@ const ivec2 PAINTER_HEXES[11] = {
     ivec2(-1, -1), ivec2(0, -1), ivec2(1, -1), ivec2(2, -1),
     ivec2(-1, 0), ivec2(0, 0), ivec2(1, 0),
     ivec2(-2, 1), ivec2(-1, 1), ivec2(0, 1), ivec2(1, 1)
+};
+
+// Enlarged mountain art reaches beyond the usual decoration neighborhood.
+const ivec2 MOUNTAIN_PAINTER_HEXES[37] = {
+    ivec2(0, -3), ivec2(1, -3), ivec2(2, -3), ivec2(3, -3),
+    ivec2(-1, -2), ivec2(0, -2), ivec2(1, -2), ivec2(2, -2), ivec2(3, -2),
+    ivec2(-2, -1), ivec2(-1, -1), ivec2(0, -1), ivec2(1, -1), ivec2(2, -1), ivec2(3, -1),
+    ivec2(-3, 0), ivec2(-2, 0), ivec2(-1, 0), ivec2(0, 0), ivec2(1, 0), ivec2(2, 0), ivec2(3, 0),
+    ivec2(-3, 1), ivec2(-2, 1), ivec2(-1, 1), ivec2(0, 1), ivec2(1, 1), ivec2(2, 1),
+    ivec2(-3, 2), ivec2(-2, 2), ivec2(-1, 2), ivec2(0, 2), ivec2(1, 2),
+    ivec2(-3, 3), ivec2(-2, 3), ivec2(-1, 3), ivec2(0, 3)
 };
 
 float brush_distance(int q, int r) {
@@ -406,7 +419,7 @@ vec4 sample_overlay(sampler2DArray atlas, int art, vec2 uv, vec2 dx, vec2 dy, fl
     return texel;
 }
 
-vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, vec2 tile_dy, float minification, float symbol_visibility) {
+vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, vec2 tile_dy, float minification, float symbol_visibility, bool mountain_only) {
     ivec2 offset = data_offset(hex);
     bool decorative = world_ocean_frame && !inside(to_offset(hex));
     if (!inside(offset) && !decorative) return color;
@@ -443,6 +456,8 @@ vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, v
             int special = surface & 7;
             if (special >= 1 && special <= 3) base_relief = 5 + special;
         }
+        bool mountain = base_relief >= 2 && base_relief <= 4;
+        if (mountain_only && !mountain) return color;
         int variant = int(rank % uint(VARIANTS));
         int art = base_relief * VARIANTS + variant;
 
@@ -482,6 +497,11 @@ vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, v
             anchor += rand2 * (cliff ? vec2(0.11, 0.19) : vec2(0.045, 0.075)) * distant_relief;
             vertical_skew = (float((rank >> 20u) & 255u) / 127.5 - 1.0) * 0.24 * distant_relief;
         }
+        if (mountain) {
+            // Half VolcanoOverlay.SymbolSize, converted from map units to hex UV units.
+            vec2 mountain_size = mix(vec2(3.0, 2.25), vec2(0.675, 0.62), detail_zoom);
+            size = mix(size, mountain_size, mountain_zoom_scale);
+        }
         vec2 sample_pos = (tile - anchor) / size;
         mat2 projection = mat2(vec2(1.0, vertical_skew), vec2(skew, 1.0));
         vec2 uv = projection * sample_pos + vec2(0.5);
@@ -498,10 +518,15 @@ vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, v
         }
     }
 
+    if (mountain_only) return color;
+
     // 2. Dense Overlapping 2.5D Battle Brothers Forests & Scrub (randomized position breaks hex rows)
     if (show_vegetation && (surface & 128) != 0) {
         int base_veg = vegetation_index(biome_id(data), water);
-        if (base_veg >= 0) {
+        bool trees = (base_veg >= 0 && base_veg <= 3) || (base_veg >= 6 && base_veg <= 9);
+        uint thinning_rank = vegetation_hash(hex + ivec2(frame_noise_offset * 1000.0));
+        float tree_visibility = trees && (thinning_rank & 1u) == 0u ? 1.0 - tree_thinning : 1.0;
+        if (base_veg >= 0 && tree_visibility > 0.0) {
             int variant = int((rank >> 2u) % uint(VARIANTS));
             int art = base_veg * VARIANTS + variant;
 
@@ -519,7 +544,7 @@ vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, v
             vec2 uv = (tile - anchor) * projection + vec2(0.5);
             if (inside_art(uv)) {
                 vec4 texel = sample_overlay(vegetation_art, art, uv, tile_dx * projection, tile_dy * projection, minification, 8.0);
-                color = mix(color, texel.rgb, texel.a * symbol_visibility);
+                color = mix(color, texel.rgb, texel.a * symbol_visibility * tree_visibility);
             }
         }
     }
@@ -545,13 +570,23 @@ vec3 decorate_single_hex(vec3 color, ivec2 hex, bool is_current, vec2 tile_dx, v
 vec3 decorate(vec3 color, TerrainSample data, ivec2 hex, vec2 tile_dx, vec2 tile_dy, float symbol_visibility) {
     float minification = smoothstep(0.42, 0.88, max(length(tile_dx), length(tile_dy)));
     if (minification >= 0.999) {
-        return decorate_single_hex(color, hex, true, tile_dx, tile_dy, minification, symbol_visibility);
+        return decorate_single_hex(color, hex, true, tile_dx, tile_dy, minification, symbol_visibility, false);
+    }
+    if (mountain_zoom_scale > 0.0 && detail_zoom < 0.75) {
+        for (int i = 0; i < 37; i++) {
+            ivec2 offset_hex = MOUNTAIN_PAINTER_HEXES[i];
+            bool usual_hex = (offset_hex.y == -1 && offset_hex.x >= -1 && offset_hex.x <= 2)
+                || (offset_hex.y == 0 && abs(offset_hex.x) <= 1)
+                || (offset_hex.y == 1 && offset_hex.x >= -2 && offset_hex.x <= 1);
+            color = decorate_single_hex(color, hex + offset_hex, all(equal(offset_hex, ivec2(0))), tile_dx, tile_dy, minification, symbol_visibility, !usual_hex);
+        }
+        return color;
     }
     // Render 11-hex neighborhood in 2.5D back-to-front painter's order so mountains and forests overlap across hex borders
     for (int i = 0; i < 11; i++) {
         ivec2 offset_hex = PAINTER_HEXES[i];
         bool is_current = (i == 5);
-        color = decorate_single_hex(color, hex + offset_hex, is_current, tile_dx, tile_dy, minification, symbol_visibility);
+        color = decorate_single_hex(color, hex + offset_hex, is_current, tile_dx, tile_dy, minification, symbol_visibility, false);
     }
     return color;
 }

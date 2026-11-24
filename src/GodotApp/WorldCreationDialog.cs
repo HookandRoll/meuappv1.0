@@ -68,7 +68,7 @@ public partial class WorldCreationDialog : ConfirmationDialog
 
         _algorithm.AddItem("Ruído fractal (fBm)");
         _algorithm.AddItem("Centros de massas de terra");
-        _algorithm.AddItem("Escultura continental (estilo Azgaar)");
+        _algorithm.AddItem("Escultura continental");
         _algorithm.SetItemDisabled((int)TerrainAlgorithm.Fractal, true);
         _algorithm.SetItemDisabled((int)TerrainAlgorithm.LandmassCenters, true);
         _algorithm.SetItemTooltip((int)TerrainAlgorithm.Fractal, "Algoritmo legado. Disponível nos mundos salvos que já o utilizam.");

@@ -14,7 +14,9 @@ public partial class MapView
     private async void RunSizeBenchmark(int width)
     {
         bool releaseAtlas = OS.GetCmdlineUserArgs().Contains("--release-atlas");
-        string output = releaseAtlas ? $"results/performance-atlas-v{WorldGenerator.Version}" : "results/performance-all-sizes-v29";
+        bool vegetationZoomReview = OS.GetCmdlineUserArgs().Contains("--vegetation-zoom-review");
+        bool releaseValidation = OS.GetCmdlineUserArgs().Contains("--release-validation");
+        string output = releaseValidation ? "results/alpha22-performance" : vegetationZoomReview ? "results/vegetation-zoom-m4" : releaseAtlas ? $"results/performance-atlas-v{WorldGenerator.Version}" : "results/performance-all-sizes-v29";
         string savePath = Path.Combine(Path.GetTempPath(), "perf-" + Guid.NewGuid() + ".world");
         try
         {
@@ -71,14 +73,14 @@ public partial class MapView
             var fitScale = _map.Scale;
             var fitPosition = _map.Position;
             var viewportCenter = GetViewportRect().Size * 0.5f;
-            async Task<(double Fps, double P95)> Moving(bool overview)
+            async Task<(double Fps, double P95)> Moving(bool overview, bool maximumZoom = false)
             {
                 var samples = new double[180];
                 var total = Stopwatch.StartNew();
                 for (int i = 0; i < samples.Length; i++)
                 {
                     var frame = Stopwatch.StartNew();
-                    float zoom = overview ? fitScale.X * (1f + 0.12f * Mathf.Sin(i * 0.04f)) : 3.5f + 0.45f * Mathf.Sin(i * 0.04f);
+                    float zoom = maximumZoom ? 44f : overview ? fitScale.X * (1f + 0.12f * Mathf.Sin(i * 0.04f)) : 3.5f + 0.45f * Mathf.Sin(i * 0.04f);
                     _map.Scale = Vector2.One * zoom;
                     var center = new Vector2(_mapSize.X * (0.5f + 0.10f * Mathf.Sin(i * 0.025f)), _mapSize.Y * 0.5f);
                     _map.Position = viewportCenter - center * zoom;
@@ -91,6 +93,25 @@ public partial class MapView
             }
             var overview = await Moving(true);
             var detail = await Moving(false);
+            (double Fps, double P95)? maximumZoom = null;
+            if (vegetationZoomReview)
+            {
+                maximumZoom = await Moving(false, true);
+                var forestCenter = FindDetailCenter(world);
+                foreach (float zoom in new[] { 22f, 36f, 44f })
+                {
+                    ShowDetail(forestCenter, zoom);
+                    foreach (bool thinning in new[] { false, true })
+                    {
+                        _material.SetShaderParameter("tree_thinning", thinning ? Mathf.SmoothStep(28f, 44f, zoom) : 0f);
+                        await NextDraw(); await NextDraw();
+                        using var image = GetViewport().GetTexture().GetImage();
+                        Require(image.SavePng(Path.Combine(output, $"zoom-{zoom}-{(thinning ? "after" : "before")}.png")) == Error.Ok,
+                            "Falha ao salvar comparação de vegetação.");
+                    }
+                }
+                GD.Print($"ZOOM MAX: {maximumZoom.Value.Fps:F1}fps p95={maximumZoom.Value.P95:F2}ms");
+            }
             _map.Scale = fitScale; _map.Position = fitPosition; UpdateArtworkZoom();
             double slowestLayer = 0;
             var layerTimes = new double[Layers.Length];
@@ -153,6 +174,7 @@ public partial class MapView
                 manifest.GeneratorVersion, world.Width, world.Height, hexes = world.Count, manifest.Seed, manifest.Generation,
                 generationSeconds, rendererSeconds, firstMapSeconds = generationSeconds + rendererSeconds, mapManagedBytes,
                 overviewFps = overview.Fps, overviewP95Ms = overview.P95, detailFps = detail.Fps, detailP95Ms = detail.P95,
+                maximumZoomFps = maximumZoom?.Fps, maximumZoomP95Ms = maximumZoom?.P95,
                 slowestLayerMs = slowestLayer, layerTimesMs = layerTimes, fullUploadMs = uploadMs,
                 saveSeconds, loadAndVerifySeconds, saveBytes, editorOpenSeconds,
                 editorMedianMs = editing[editing.Length / 2], editorP95Ms = editing[(int)Math.Ceiling(editing.Length * 0.95) - 1],

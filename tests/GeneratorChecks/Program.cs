@@ -19,6 +19,7 @@ catch (Exception ex)
 
 static void RunChecks(string[] args)
 {
+if (args.Contains("--network-only")) { WorldGenerator.CheckNetworkEditing(); return; }
 if (args.Contains("--terrain-rain-only")) { WorldGenerator.CheckTerrainRain(); return; }
 if (args.Length == 0) WorldGenerator.CheckTerrainRain();
 if (args.Contains("--balanced-rain-only")) { WorldGenerator.CheckBalancedRain(); return; }

@@ -44,6 +44,7 @@ public partial class MapView : Node2D
     private string? _hadleyError;
     private bool _hadleyClosed;
     private RiverOverlay _riverOverlay = null!;
+    private RoadOverlay _roadOverlay = null!;
     private VolcanoOverlay _volcanoOverlay = null!;
     private bool _showVolcanoes = true;
     private double _statusTime;
@@ -59,6 +60,8 @@ public partial class MapView : Node2D
         _map.AddChild(_surface);
         _riverOverlay = new RiverOverlay();
         _map.AddChild(_riverOverlay);
+        _roadOverlay = new RoadOverlay();
+        _map.AddChild(_roadOverlay);
         _volcanoOverlay = new VolcanoOverlay();
         _map.AddChild(_volcanoOverlay);
         _tectonicOverlay = new TectonicOverlay { Visible = false };
@@ -74,7 +77,11 @@ public partial class MapView : Node2D
 
         string[] args = OS.GetCmdlineUserArgs();
         string? benchmarkSize = Array.Find(args, arg => arg.StartsWith("--benchmark-size="));
-        if (Array.IndexOf(args, "--hadley-main-review") >= 0)
+        if (Array.IndexOf(args, "--mountain-zoom-review") >= 0)
+            Callable.From(RunMountainZoomReview).CallDeferred();
+        else if (Array.IndexOf(args, "--network-review") >= 0)
+            Callable.From(RunNetworkReview).CallDeferred();
+        else if (Array.IndexOf(args, "--hadley-main-review") >= 0)
             Callable.From(RunHadleyMainReview).CallDeferred();
         else if (Array.IndexOf(args, "--hadley-orographic-comparison") >= 0)
             Callable.From(() => RunHadleyReplenishmentComparison(orographic: true)).CallDeferred();
@@ -306,6 +313,7 @@ public partial class MapView : Node2D
     {
         _riverOverlay.Invalidate();
         _riverOverlay.World = world;
+        _roadOverlay.SetWorld(world);
         _riverOverlay.QueueRedraw();
         _volcanoOverlay.SetWorld(world, _artwork);
         GlobalDataTextures? previous = _textures;
@@ -346,6 +354,7 @@ public partial class MapView : Node2D
     {
         float detail = Mathf.SmoothStep(12f, 22f, _map.Scale.X);
         _material.SetShaderParameter("detail_zoom", detail);
+        _material.SetShaderParameter("tree_thinning", Mathf.SmoothStep(28f, 44f, _map.Scale.X));
         _volcanoOverlay.SetZoom(detail);
         _regionLabels.Zoom=_map.Scale.X;_regionLabels.QueueRedraw();
     }
@@ -522,6 +531,7 @@ public partial class MapView : Node2D
         if (_hadleyOverlay.Visible || index == HumidityLayer)
             RefreshHadleyWind();
         _riverOverlay.Visible = index == 0 || index == 6;
+        _roadOverlay.Visible = index == 0 || index == 6;
         _volcanoOverlay.Visible = _showVolcanoes && (index == 0 || index == 6);
         if (!_busy)
             RefreshEditorClimate();

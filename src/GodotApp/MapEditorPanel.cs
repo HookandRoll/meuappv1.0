@@ -13,9 +13,9 @@ internal sealed partial class MapEditorPanel : PanelContainer
     private const float RightMargin = 6;
     internal const float Top = 86;
     private const float Bottom = 68;
-    private readonly Button[] _rail = new Button[4];
-    private readonly Label[] _pageCaptions = new Label[4];
-    private readonly Control[] _pageIcons = new Control[4];
+    private readonly Button[] _rail = new Button[5];
+    private readonly Label[] _pageCaptions = new Label[5];
+    private readonly Control[] _pageIcons = new Control[5];
     private Label[] _pageHeadings = Array.Empty<Label>();
     private readonly Button[] _brushTypes = new Button[4];
     private readonly Button[] _regenerationTargets = new Button[3];
@@ -34,7 +34,12 @@ internal sealed partial class MapEditorPanel : PanelContainer
     private readonly Button[] _elevationTools = new Button[5];
     private HBoxContainer _elevationValue = null!;
     private int _brushType;
-    private readonly VBoxContainer[] _pages = new VBoxContainer[4];
+    private readonly VBoxContainer[] _pages = new VBoxContainer[5];
+    private OptionButton _networkKind = null!;
+    private OptionButton _networkTier = null!;
+    private CheckButton _networkErase = null!;
+    internal bool NetworkRiver => _networkKind.Selected == 1;
+    internal int NetworkLevel => _networkErase.ButtonPressed ? 0 : _networkTier.GetSelectedId();
     private VBoxContainer _selectionControls = null!;
     private Label _biomeName = null!;
     private Label _hexDetails = null!;
@@ -93,7 +98,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
             _pages[i] = Stack(10);
             stack.AddChild(_pages[i]);
         }
-        var sections = new[] { BuildHexEditor(_pages[0]), BuildBrush(_pages[1]), BuildLocks(_pages[2]), BuildRegeneration(_pages[3]) };
+        var sections = new[] { BuildHexEditor(_pages[0]), BuildBrush(_pages[1]), BuildLocks(_pages[2]), BuildRegeneration(_pages[3]), BuildNetworks(_pages[4]) };
         stack.AddChild(new Control { SizeFlagsVertical = SizeFlags.ExpandFill });
         _saveProgress = Stack(4);
         stack.AddChild(_saveProgress);
@@ -153,6 +158,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
         _brushTypes[0].Disabled = !enabled || stage < GenerationStage.Terrain;
         _brushTypes[1].Disabled = _brushTypes[3].Disabled = !enabled || stage < GenerationStage.Relief;
         _brushTypes[2].Disabled = !enabled || stage < GenerationStage.Land;
+        _networkKind.Disabled = _networkTier.Disabled = _networkErase.Disabled = !enabled || stage < GenerationStage.Land;
         foreach (Button button in _elevationTools)
             button.Disabled = _brushTypes[3].Disabled;
         _swatches.Modulate = _palette.Modulate = _brushTypes[0].Disabled ? Muted : Colors.White;
@@ -200,7 +206,7 @@ internal sealed partial class MapEditorPanel : PanelContainer
         var shortcuts = Stack(6);
         rail.AddChild(shortcuts);
         var group = new ButtonGroup { AllowUnpress = false };
-        string[] labels = { "Editar", "Terraformar", "Locks", "Gerar" };
+        string[] labels = { "Editar", "Terraformar", "Locks", "Gerar", "Redes" };
         for (int i = 0; i < labels.Length; i++)
         {
             int index = i;
@@ -357,6 +363,11 @@ internal sealed partial class MapEditorPanel : PanelContainer
                 Line(8, -4, 3, -4);
                 Line(-8, 9, -8, 4);
                 Line(-8, 4, -3, 4);
+                break;
+            case 4:
+                Line(-9, 8, 0, 0, 2.2f);
+                Line(0, 0, 9, -8, 2.2f);
+                Line(0, 0, 9, 8, 2.2f);
                 break;
         }
     }
@@ -597,9 +608,40 @@ internal sealed partial class MapEditorPanel : PanelContainer
         var riverLock = new CheckBox { Text = "Rios", TooltipText = "Protege todas as arestas fluviais do hex, inclusive o lado compartilhado com vizinhos." };
         grid.AddChild(riverLock);
         AddLock(riverLock, HexLocks.Rivers);
+        var roadLock = new CheckBox { Text = "Estradas", TooltipText = "Protege todas as arestas de estrada do hex, inclusive o lado compartilhado." };
+        grid.AddChild(roadLock);
+        AddLock(roadLock, HexLocks.Roads);
         var featureLock = new CheckBox { Text = "Características" };
         grid.AddChild(featureLock);
         AddLock(featureLock, HexLocks.Features);
+        return title;
+    }
+
+    private Label BuildNetworks(VBoxContainer stack)
+    {
+        var (section, title) = Section(stack, "Rios e estradas");
+        Label(section, "Rede", 14, Ink);
+        _networkKind = Dropdown(section);
+        _networkKind.Name = "NetworkKind";
+        _networkKind.AddItem("Estrada");
+        _networkKind.AddItem("Rio");
+        Label(section, "Tipo / largura", 14, Ink);
+        _networkTier = Dropdown(section);
+        _networkTier.Name = "NetworkTier";
+        void Options()
+        {
+            _networkTier.Clear();
+            string[] names = NetworkRiver ? new[] { "Riacho", "Rio pequeno", "Rio", "Rio largo", "Grande rio" }
+                : new[] { "Trilha", "Terra", "Pedra" };
+            for (int i = 0; i < names.Length; i++) _networkTier.AddItem(names[i], i + 1);
+        }
+        _networkKind.ItemSelected += _ => Options();
+        Options();
+        _networkErase = new CheckButton { Name = "NetworkErase", Text = "Apagar trechos" };
+        section.AddChild(_networkErase);
+        var hint = Label(section,
+            "Arraste entre hexes para traçar. Para rios, comece na nascente e siga até a foz. Solte para aplicar.\n\nApagar remove apenas as ligações percorridas. A seleção limita a edição; locks de qualquer lado protegem a ligação.\n\nO desenho manual respeita sua decisão, inclusive subidas ou términos em terra.", 14, Muted);
+        hint.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         return title;
     }
 
